@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Painel do Administrador</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314467a'/%3E%3Cpath d='M9 21l5-6 4 4 5-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/admin.css">
+</head>
+<body class="admin">
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 21l5-6 4 4 5-8" /></svg></span>
+        <div><strong>Backoffice</strong><small>Grupos, médias e taxas</small></div>
+      </div>
+      <div class="top-actions">
+        <a href="./" class="link-btn">Ver simulador</a>
+        <button type="button" class="link-btn" id="btn-sair" hidden>Sair</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Login -->
+    <section class="card login" id="login">
+      <h2>Entrar no painel</h2>
+      <form id="form-login">
+        <label class="field"><span>Senha do administrador</span><input type="password" id="senha" autocomplete="current-password" required></label>
+        <button class="btn" type="submit">Entrar</button>
+        <p class="form-msg" id="login-msg" role="alert"></p>
+      </form>
+    </section>
+
+    <div id="painel" hidden>
+      <div class="tabs" role="tablist">
+        <button role="tab" class="tab" aria-selected="true" data-tab="grupos">Grupos e médias</button>
+        <button role="tab" class="tab" aria-selected="false" data-tab="config">Configurações</button>
+      </div>
+
+      <!-- Grupos -->
+      <section id="tab-grupos" role="tabpanel">
+        <div class="section-head">
+          <h2>Grupos cadastrados</h2>
+          <button class="btn btn-sm" type="button" id="btn-novo">+ Novo grupo</button>
+        </div>
+        <div id="lista-grupos" class="group-list"></div>
+      </section>
+
+      <!-- Configurações -->
+      <section id="tab-config" role="tabpanel" hidden>
+        <form class="card" id="form-config">
+          <h2>Dados do consultor</h2>
+          <div class="grid-2">
+            <label class="field"><span>Nome exibido no simulador</span><input name="nomeConsultor" maxlength="80"></label>
+            <label class="field"><span>WhatsApp (com DDI e DDD)</span><input name="whatsapp" inputmode="tel" placeholder="5511999999999"></label>
+          </div>
+
+          <h2>Índices de reajuste padrão (% ao ano)</h2>
+          <p class="hint mb">Usados quando o grupo não tem um reajuste próprio definido.</p>
+          <div class="grid-4">
+            <label class="field"><span>IPCA</span><input name="indices.IPCA" inputmode="decimal"></label>
+            <label class="field"><span>INCC</span><input name="indices.INCC" inputmode="decimal"></label>
+            <label class="field"><span>FIPE</span><input name="indices.FIPE" inputmode="decimal"></label>
+            <label class="field"><span>IGP-M</span><input name="indices.IGP-M" inputmode="decimal"></label>
+          </div>
+
+          <h2>Juros do financiamento para comparação (% ao mês)</h2>
+          <div class="grid-4">
+            <label class="field"><span>Imóvel</span><input name="jurosFinanciamento.imovel" inputmode="decimal"></label>
+            <label class="field"><span>Veículo</span><input name="jurosFinanciamento.veiculo" inputmode="decimal"></label>
+            <label class="field"><span>Moto</span><input name="jurosFinanciamento.moto" inputmode="decimal"></label>
+            <label class="field"><span>Pesados</span><input name="jurosFinanciamento.pesados" inputmode="decimal"></label>
+            <label class="field"><span>Serviços</span><input name="jurosFinanciamento.servicos" inputmode="decimal"></label>
+          </div>
+          <button class="btn" type="submit">Salvar configurações</button>
+          <p class="form-msg" id="config-msg" role="status"></p>
+        </form>
+      </section>
+    </div>
+
+    <!-- Editor de grupo -->
+    <dialog id="dlg-grupo" class="dialog">
+      <form id="form-grupo" method="dialog">
+        <div class="dialog-head">
+          <h2 id="dlg-titulo">Editar grupo</h2>
+          <button type="button" class="icon-btn" id="dlg-fechar" aria-label="Fechar">✕</button>
+        </div>
+        <div class="dialog-body">
+          <fieldset class="box">
+            <legend>Média de lances · últimos 6 meses</legend>
+            <p class="hint mb">Informe o lance livre contemplado em cada mês (% do crédito). A média é calculada automaticamente, mas você pode ajustá-la.</p>
+            <div class="grid-6" id="hist-inputs"></div>
+            <label class="field media-field"><span>Média exibida ao cliente (%)</span><input name="mediaLance6m" inputmode="decimal"></label>
+          </fieldset>
+
+          <fieldset class="box">
+            <legend>Identificação</legend>
+            <div class="grid-2">
+              <label class="field"><span>Código (sem espaços)</span><input name="id" pattern="[a-z0-9\-]{1,60}" required placeholder="ex.: imovel-1050"></label>
+              <label class="field"><span>Nome do grupo</span><input name="nome" required maxlength="120"></label>
+              <label class="field"><span>Tipo</span>
+                <select name="tipo">
+                  <option value="imovel">Imóvel</option>
+                  <option value="veiculo">Veículo</option>
+                  <option value="moto">Moto</option>
+                  <option value="pesados">Pesados</option>
+                  <option value="servicos">Serviços</option>
+                </select>
+              </label>
+              <label class="field switch-field"><span>Visível no simulador</span>
+                <label class="switch"><input type="checkbox" name="ativo"><span class="switch-ui" aria-hidden="true"></span><span>Ativo</span></label>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="box">
+            <legend>Crédito e prazo</legend>
+            <div class="grid-3">
+              <label class="field"><span>Crédito mínimo (R$)</span><input name="creditoMin" inputmode="numeric"></label>
+              <label class="field"><span>Crédito máximo (R$)</span><input name="creditoMax" inputmode="numeric"></label>
+              <label class="field"><span>Prazo (meses)</span><input name="prazo" inputmode="numeric"></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="box">
+            <legend>Taxas e reajuste</legend>
+            <div class="grid-3">
+              <label class="field"><span>Taxa de administração total (%)</span><input name="taxaAdm" inputmode="decimal"></label>
+              <label class="field"><span>Fundo de reserva (%)</span><input name="fundoReserva" inputmode="decimal"></label>
+              <label class="field"><span>Seguro (% a.m. s/ saldo)</span><input name="seguroMensal" inputmode="decimal"></label>
+              <label class="field"><span>Índice de reajuste</span>
+                <select name="indice"><option>IPCA</option><option>INCC</option><option>FIPE</option><option>IGP-M</option></select>
+              </label>
+              <label class="field"><span>Reajuste próprio (% a.a.)</span><input name="reajustePct" inputmode="decimal" placeholder="padrão do índice"></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="box">
+            <legend>Regras de lance e parcela</legend>
+            <div class="grid-2">
+              <label class="field"><span>Parcela reduzida (% paga até contemplar)</span><input name="parcelaReduzidaPct" inputmode="decimal" placeholder="0 = não oferece; 50 = meia parcela"></label>
+              <label class="field"><span>Lance embutido máximo (% do crédito)</span><input name="lanceEmbutidoMax" inputmode="decimal" placeholder="0 = não permite"></label>
+            </div>
+          </fieldset>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" class="btn btn-danger btn-ghost" id="btn-excluir">Excluir</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-ghost" id="btn-cancelar">Cancelar</button>
+          <button type="submit" class="btn" id="btn-salvar">Salvar</button>
+        </div>
+        <p class="form-msg" id="grupo-msg" role="alert"></p>
+      </form>
+    </dialog>
+  </main>
+
+  <script src="js/calc.js"></script>
+  <script src="js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Simulador de Consórcio</title>
+  <meta name="description" content="Simule seu consórcio: composição da parcela, reajuste anual, inteligência de lance, cenários pós-contemplação e comparativo com financiamento.">
+  <meta name="theme-color" content="#14467a">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314467a'/%3E%3Cpath d='M9 21l5-6 4 4 5-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M9 21l5-6 4 4 5-8" /></svg>
+        </span>
+        <div>
+          <strong>Consórcio Inteligente</strong>
+          <small id="consultor-nome">Simulador</small>
+        </div>
+      </div>
+      <nav class="quicknav" aria-label="Seções">
+        <a href="#simulacao">Simular</a>
+        <a href="#lance">Lance</a>
+        <a href="#pos">Contemplação</a>
+        <a href="#comparativo">Comparar</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <h1>Simule seu consórcio com clareza total</h1>
+      <p>Veja a composição da parcela, como o reajuste valoriza sua carta, a força do seu lance e quanto você economiza em relação a um financiamento.</p>
+    </section>
+
+    <div id="load-error" class="alert alert-critical" hidden></div>
+
+    <!-- 1. Simulação -->
+    <section class="card" id="simulacao" aria-labelledby="h-sim">
+      <h2 id="h-sim"><span class="step">1</span>Sua simulação</h2>
+
+      <fieldset class="field">
+        <legend>O que você quer conquistar?</legend>
+        <div class="chips" id="tipos" role="radiogroup"></div>
+      </fieldset>
+
+      <label class="field">
+        <span>Grupo</span>
+        <select id="grupo"></select>
+        <small class="hint" id="grupo-info"></small>
+      </label>
+
+      <div class="field">
+        <label for="credito">Valor da carta de crédito</label>
+        <div class="money-input">
+          <span>R$</span>
+          <input id="credito" inputmode="numeric" autocomplete="off">
+        </div>
+        <input type="range" id="credito-range" aria-label="Valor da carta de crédito">
+        <div class="range-legend"><span id="credito-min"></span><span id="credito-max"></span></div>
+      </div>
+
+      <div class="field" id="reduzida-wrap">
+        <label class="switch">
+          <input type="checkbox" id="reduzida">
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span id="reduzida-label">Parcela reduzida até a contemplação</span>
+        </label>
+        <small class="hint">Você paga uma parcela menor até ser contemplado; a diferença é diluída nas parcelas seguintes.</small>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="mes">Mês previsto de contemplação: <b id="mes-valor"></b></label>
+          <input type="range" id="mes" min="1" value="12">
+        </div>
+        <div class="field">
+          <label for="indice">Reajuste anual projetado (<span id="indice-nome">IPCA</span>)</label>
+          <div class="suffix-input">
+            <input id="indice" inputmode="decimal" autocomplete="off">
+            <span>% a.a.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <span class="kpi-label">Parcela cheia</span>
+          <strong class="kpi-value" id="kpi-cheia">–</strong>
+        </div>
+        <div class="kpi" id="kpi-pre-wrap">
+          <span class="kpi-label">Até a contemplação</span>
+          <strong class="kpi-value" id="kpi-pre">–</strong>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Prazo</span>
+          <strong class="kpi-value" id="kpi-prazo">–</strong>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Composição -->
+    <section class="card" id="composicao" aria-labelledby="h-comp">
+      <h2 id="h-comp"><span class="step">2</span>Transparência: o que compõe sua parcela</h2>
+      <div class="chart" id="chart-comp"></div>
+      <ul class="legend" id="legend-comp"></ul>
+      <table class="table">
+        <thead><tr><th>Componente</th><th class="num">Parcela cheia</th><th class="num" id="th-reduzida">Reduzida</th></tr></thead>
+        <tbody id="tbl-comp"></tbody>
+      </table>
+      <div class="facts">
+        <div><span>Taxa de administração</span><b id="f-adm"></b></div>
+        <div><span>Fundo de reserva</span><b id="f-fr"></b></div>
+        <div><span>Seguro</span><b id="f-seg"></b></div>
+        <div><span>Custo total do plano (sem reajuste)</span><b id="f-total"></b></div>
+      </div>
+      <p class="note">Consórcio não cobra juros. A taxa de administração é diluída no prazo e o fundo de reserva, se não utilizado, é devolvido ao final do grupo.</p>
+    </section>
+
+    <!-- 3. Reajuste -->
+    <section class="card" id="reajuste" aria-labelledby="h-reaj">
+      <h2 id="h-reaj"><span class="step">3</span>Reajuste anual: sua carta acompanha a inflação</h2>
+      <div class="alert alert-info">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8h.01M11 12h1v5h1"/></svg>
+        <div>
+          <strong>Reajuste não é juros.</strong>
+          <span id="reaj-texto">O reajuste anual valoriza a sua carta de crédito na mesma proporção da parcela, preservando seu poder de compra.</span>
+        </div>
+      </div>
+      <div class="twin">
+        <figure>
+          <figcaption>Valor da carta de crédito por ano</figcaption>
+          <div class="chart" id="chart-credito"></div>
+        </figure>
+        <figure>
+          <figcaption>Valor da parcela cheia por ano</figcaption>
+          <div class="chart" id="chart-parcela"></div>
+        </figure>
+      </div>
+      <details class="table-toggle">
+        <summary>Ver tabela ano a ano</summary>
+        <div class="table-scroll">
+          <table class="table">
+            <thead><tr><th>Ano</th><th class="num">Carta de crédito</th><th class="num">Parcela cheia</th><th class="num">Variação acumulada</th></tr></thead>
+            <tbody id="tbl-reaj"></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <!-- 4. Lance -->
+    <section class="card" id="lance" aria-labelledby="h-lance">
+      <h2 id="h-lance"><span class="step">4</span>Inteligência de lance</h2>
+      <div class="stat-row">
+        <div class="stat">
+          <span>Média de lances contemplados · 6 meses</span>
+          <strong id="lance-media">–</strong>
+        </div>
+        <div class="stat">
+          <span>Maior lance no período</span>
+          <strong id="lance-max">–</strong>
+        </div>
+      </div>
+      <figure>
+        <figcaption>Lance livre contemplado por mês (% do crédito)</figcaption>
+        <div class="chart" id="chart-hist"></div>
+      </figure>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="lance-bolso">Lance de bolso (recursos próprios)</label>
+          <div class="suffix-input">
+            <input id="lance-bolso" inputmode="decimal" value="0" autocomplete="off">
+            <span>%</span>
+          </div>
+          <small class="hint" id="lance-bolso-r"></small>
+        </div>
+        <div class="field">
+          <label for="lance-embutido">Lance embutido (usa parte da carta)</label>
+          <div class="suffix-input">
+            <input id="lance-embutido" inputmode="decimal" value="0" autocomplete="off">
+            <span>%</span>
+          </div>
+          <small class="hint" id="lance-embutido-r"></small>
+        </div>
+      </div>
+
+      <div class="thermo" id="thermo">
+        <div class="thermo-head">
+          <span class="badge" id="thermo-badge">–</span>
+          <span class="thermo-total">Oferta total: <b id="thermo-total">0%</b></span>
+        </div>
+        <div class="thermo-track" aria-hidden="true">
+          <div class="thermo-zone z-baixo"></div>
+          <div class="thermo-zone z-comp"></div>
+          <div class="thermo-zone z-forte"></div>
+          <div class="thermo-media" id="thermo-media"><span>média</span></div>
+          <div class="thermo-pin" id="thermo-pin"></div>
+        </div>
+        <div class="thermo-scale"><span>Lance Baixo</span><span>Competitivo</span><span>Lance Forte</span></div>
+        <p class="thermo-msg" id="thermo-msg"></p>
+        <p class="hint" id="thermo-dica"></p>
+      </div>
+      <div id="avisos"></div>
+    </section>
+
+    <!-- 5. Pré x Pós -->
+    <section class="card" id="pos" aria-labelledby="h-pos">
+      <h2 id="h-pos"><span class="step">5</span>Antes e depois da contemplação</h2>
+      <div class="timeline">
+        <div class="tl-step">
+          <span class="tl-dot"></span>
+          <div>
+            <small>Do mês 1 ao <b id="tl-mes"></b></small>
+            <strong id="tl-pre"></strong>
+            <span class="hint" id="tl-pre-desc"></span>
+          </div>
+        </div>
+        <div class="tl-step tl-star">
+          <span class="tl-dot"></span>
+          <div>
+            <small>Contemplação</small>
+            <strong id="tl-credito"></strong>
+            <span class="hint" id="tl-credito-desc"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="scenarios">
+        <article class="scenario" id="sc-sem">
+          <h3>Sem lance</h3>
+          <p class="sc-value" id="sem-parcela"></p>
+          <p class="hint" id="sem-desc"></p>
+        </article>
+        <label class="scenario selectable">
+          <input type="radio" name="cenario" value="A" checked>
+          <h3>Cenário A · Reduzir a parcela</h3>
+          <p class="sc-value" id="a-parcela"></p>
+          <p class="hint" id="a-desc"></p>
+          <dl><dt>Total desembolsado</dt><dd id="a-total"></dd></dl>
+        </label>
+        <label class="scenario selectable">
+          <input type="radio" name="cenario" value="B">
+          <h3>Cenário B · Reduzir o prazo</h3>
+          <p class="sc-value" id="b-parcela"></p>
+          <p class="hint" id="b-desc"></p>
+          <dl><dt>Total desembolsado</dt><dd id="b-total"></dd></dl>
+        </label>
+      </div>
+      <p class="note">Valores pós-contemplação já consideram o reajuste projetado até o mês de contemplação. O saldo devedor continua sendo reajustado anualmente pelo índice do grupo.</p>
+    </section>
+
+    <!-- 6. Comparativo -->
+    <section class="card" id="comparativo" aria-labelledby="h-cmp">
+      <h2 id="h-cmp"><span class="step">6</span>Consórcio x Financiamento</h2>
+      <div class="economia">
+        <span>Você deixa de pagar</span>
+        <strong id="cmp-economia"></strong>
+        <small id="cmp-economia-desc"></small>
+      </div>
+      <div class="chart" id="chart-cmp"></div>
+      <ul class="legend">
+        <li><i style="background:var(--series-1)"></i>Crédito (o bem)</li>
+        <li><i style="background:var(--series-2)"></i>Custo (taxas ou juros)</li>
+      </ul>
+      <div class="table-scroll">
+        <table class="table">
+          <thead><tr><th></th><th class="num">Consórcio</th><th class="num">Financiamento</th></tr></thead>
+          <tbody id="tbl-cmp"></tbody>
+        </table>
+      </div>
+      <p class="note" id="cmp-nota"></p>
+    </section>
+
+    <!-- 7. WhatsApp -->
+    <section class="card card-cta" id="enviar" aria-labelledby="h-env">
+      <h2 id="h-env"><span class="step">7</span>Receba sua proposta</h2>
+      <p>Envie esta simulação para o consultor pelo WhatsApp e receba uma análise personalizada.</p>
+      <div class="grid-2">
+        <label class="field"><span>Seu nome</span><input id="cli-nome" autocomplete="name" placeholder="Como podemos te chamar?"></label>
+        <label class="field"><span>Cidade (opcional)</span><input id="cli-cidade" autocomplete="address-level2"></label>
+      </div>
+      <button class="btn-whats" id="btn-whats" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm5.3 14.2c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .2-3.3-.7-2.8-1.1-4.5-3.9-4.7-4.1-.1-.2-1.1-1.5-1.1-2.8s.7-2 1-2.3c.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.8 2c.1.2.1.4 0 .5l-.4.6-.4.4c-.1.2-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.3 2.4 1.5.3.1.5.1.6-.1l.9-1c.2-.3.4-.2.6-.1l1.9.9c.3.1.5.2.5.3.1.2.1.6-.1 1.2z"/></svg>
+        Enviar simulação no WhatsApp
+      </button>
+    </section>
+
+    <footer class="disclaimer">
+      <p>Simulação ilustrativa, sem valor contratual. Valores de reajuste são projeções e podem variar conforme o índice oficial. Condições finais dependem do regulamento do grupo e da administradora.</p>
+      <p><a href="admin.html">Área do administrador</a></p>
+    </footer>
+  </main>
+
+  <div class="sticky-bar" id="sticky-bar">
+    <div class="wrap sticky-inner">
+      <div>
+        <small id="sticky-label">Parcela</small>
+        <strong id="sticky-parcela">–</strong>
+      </div>
+      <a class="btn-whats btn-sm" href="#enviar">Quero esta proposta</a>
+    </div>
+  </div>
+
+  <script src="js/calc.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

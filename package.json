@@ -1,0 +1,14 @@
+{
+  "name": "consorcio-simulador",
+  "version": "1.0.0",
+  "description": "Web app de simulação e inteligência de consórcio, com envio da proposta para o WhatsApp e painel do administrador.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED"
+}

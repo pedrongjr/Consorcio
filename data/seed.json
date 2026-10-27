@@ -1,0 +1,80 @@
+{
+  "config": {
+    "nomeConsultor": "Seu Consultor de Consórcio",
+    "whatsapp": "5511999999999",
+    "indices": { "IPCA": 4.5, "INCC": 5.5, "FIPE": 3.5, "IGP-M": 4.0 },
+    "jurosFinanciamento": { "imovel": 0.95, "veiculo": 1.89, "moto": 2.3, "pesados": 1.6, "servicos": 3.2 }
+  },
+  "grupos": [
+    {
+      "id": "imovel-1050",
+      "nome": "Grupo 1050 · Imóveis",
+      "tipo": "imovel",
+      "creditoMin": 150000, "creditoMax": 800000,
+      "prazo": 200,
+      "taxaAdm": 18, "fundoReserva": 2, "seguroMensal": 0.031,
+      "indice": "INCC", "reajustePct": null,
+      "parcelaReduzidaPct": 50,
+      "lanceEmbutidoMax": 30,
+      "mediaLance6m": 32,
+      "historicoLances": [30.5, 31.2, 33.8, 32.4, 31.9, 32.2],
+      "ativo": true
+    },
+    {
+      "id": "imovel-2210",
+      "nome": "Grupo 2210 · Imóveis Prazo Curto",
+      "tipo": "imovel",
+      "creditoMin": 100000, "creditoMax": 500000,
+      "prazo": 150,
+      "taxaAdm": 16, "fundoReserva": 1.5, "seguroMensal": 0.031,
+      "indice": "IPCA", "reajustePct": null,
+      "parcelaReduzidaPct": 70,
+      "lanceEmbutidoMax": 25,
+      "mediaLance6m": 41,
+      "historicoLances": [38, 40.5, 42, 41.3, 40.8, 43.4],
+      "ativo": true
+    },
+    {
+      "id": "auto-0870",
+      "nome": "Grupo 0870 · Automóveis",
+      "tipo": "veiculo",
+      "creditoMin": 50000, "creditoMax": 250000,
+      "prazo": 80,
+      "taxaAdm": 15, "fundoReserva": 2, "seguroMensal": 0.045,
+      "indice": "FIPE", "reajustePct": null,
+      "parcelaReduzidaPct": 50,
+      "lanceEmbutidoMax": 30,
+      "mediaLance6m": 45,
+      "historicoLances": [42, 44.5, 46, 45.2, 44.8, 47.5],
+      "ativo": true
+    },
+    {
+      "id": "moto-0312",
+      "nome": "Grupo 0312 · Motos",
+      "tipo": "moto",
+      "creditoMin": 15000, "creditoMax": 60000,
+      "prazo": 60,
+      "taxaAdm": 17, "fundoReserva": 2, "seguroMensal": 0.05,
+      "indice": "FIPE", "reajustePct": null,
+      "parcelaReduzidaPct": 0,
+      "lanceEmbutidoMax": 20,
+      "mediaLance6m": 28,
+      "historicoLances": [25, 27, 29.5, 28, 27.6, 30.9],
+      "ativo": true
+    },
+    {
+      "id": "serv-0120",
+      "nome": "Grupo 0120 · Serviços",
+      "tipo": "servicos",
+      "creditoMin": 10000, "creditoMax": 40000,
+      "prazo": 40,
+      "taxaAdm": 20, "fundoReserva": 3, "seguroMensal": 0.05,
+      "indice": "IPCA", "reajustePct": null,
+      "parcelaReduzidaPct": 0,
+      "lanceEmbutidoMax": 0,
+      "mediaLance6m": 22,
+      "historicoLances": [20, 21.5, 23, 22.4, 22, 23.1],
+      "ativo": true
+    }
+  ]
+}

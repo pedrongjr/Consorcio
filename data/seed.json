@@ -1,7 +1,7 @@
 {
   "config": {
     "nomeConsultor": "Seu Consultor de Consórcio",
-    "whatsapp": "5511999999999",
+    "whatsapp": "556391314028",
     "indices": { "IPCA": 4.5, "INCC": 5.5, "FIPE": 3.5, "IGP-M": 4.0 },
     "jurosFinanciamento": { "imovel": 0.95, "veiculo": 1.89, "moto": 2.3, "pesados": 1.6, "servicos": 3.2 }
   },

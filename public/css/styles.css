@@ -87,7 +87,11 @@ body {
   -webkit-font-smoothing: antialiased;
   padding-bottom: 84px;
 }
-.wrap { width: 100%; max-width: 880px; margin: 0 auto; padding: 0 16px; }
+.wrap {
+  width: 100%; max-width: 880px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
 h1, h2, h3 { line-height: 1.25; margin: 0; }
 a { color: var(--brand-2); }
 .hint { color: var(--muted); font-size: 0.85rem; display: block; }
@@ -95,7 +99,7 @@ a { color: var(--brand-2); }
 
 /* Topbar */
 .topbar {
-  position: sticky; top: 0; z-index: 20;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   backdrop-filter: saturate(1.4) blur(10px);
   border-bottom: 1px solid var(--border);

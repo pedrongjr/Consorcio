@@ -53,8 +53,12 @@
   var ultimo = null; // última simulação calculada
 
   // ---------------- Carregamento ----------------
-  fetch('api/public')
-    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+  // Versão estática (sem servidor): os dados vêm embutidos em window.CONSORCIO_DATA.
+  var carregar = window.CONSORCIO_DATA
+    ? Promise.resolve(window.CONSORCIO_DATA)
+    : fetch('api/public').then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+  if (window.CONSORCIO_DATA) $('admin-link').hidden = true;
+  carregar
     .then(init)
     .catch(function () {
       var e = $('load-error');
@@ -177,9 +181,10 @@
     $('lance-bolso').addEventListener('input', function (e) { state.bolso = parseDec(e.target.value); atualizar(); });
     $('lance-embutido').addEventListener('input', function (e) { state.embutido = parseDec(e.target.value); atualizar(); });
     Array.prototype.forEach.call(document.querySelectorAll('input[name="cenario"]'), function (r) {
-      r.addEventListener('change', function (e) { state.cenario = e.target.value; atualizarSticky(); });
+      r.addEventListener('change', function (e) { state.cenario = e.target.value; atualizarLinkWhatsApp(); });
     });
-    $('btn-whats').addEventListener('click', enviarWhatsApp);
+    $('cli-nome').addEventListener('input', atualizarLinkWhatsApp);
+    $('cli-cidade').addEventListener('input', atualizarLinkWhatsApp);
 
     var t;
     window.addEventListener('resize', function () {
@@ -231,6 +236,7 @@
     renderComparativo(cmp);
     desenharGraficos();
     atualizarSticky();
+    atualizarLinkWhatsApp();
   }
 
   function renderComposicao(c, usaReduzida) {
@@ -466,11 +472,10 @@
     return L.join('\n');
   }
 
-  function enviarWhatsApp() {
+  // Link real (e não window.open) para funcionar também em navegadores que bloqueiam pop-ups.
+  function atualizarLinkWhatsApp() {
     if (!ultimo) return;
     var num = String(state.data.config.whatsapp || '').replace(/\D/g, '');
-    var url = 'https://wa.me/' + num + '?text=' + encodeURIComponent(mensagemWhatsApp());
-    if (!num) url = 'https://wa.me/?text=' + encodeURIComponent(mensagemWhatsApp());
-    window.open(url, '_blank', 'noopener');
+    $('btn-whats').href = 'https://wa.me/' + num + '?text=' + encodeURIComponent(mensagemWhatsApp());
   }
 })();

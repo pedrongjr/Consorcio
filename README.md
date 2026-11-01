@@ -1,5 +1,7 @@
 # Consórcio Inteligente — Simulador e Backoffice
 
+> Este repositório também contém o app mobile de controle financeiro **Minhas Finanças** em [`financas-app/`](financas-app/README.md) (iOS e Android, importação de extratos OFX/CSV/PDF/XLSX com classificação automática por categoria).
+
 Web app **mobile first** para simulação completa de consórcio, com envio da proposta direto para o WhatsApp do consultor e um painel administrativo para manter grupos, taxas e médias de lance.
 
 Sem dependências externas: apenas Node.js (18+).

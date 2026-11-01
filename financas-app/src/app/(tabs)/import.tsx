@@ -1,0 +1,244 @@
+import * as DocumentPicker from 'expo-document-picker';
+import { File } from 'expo-file-system';
+import { router } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { useRef, useState } from 'react';
+import { Alert, Modal, ScrollView, Text, TextInput, View } from 'react-native';
+import { adjustCardSigns, detectFormat, parseStatementFile, UnsupportedFormatError } from '../../core/importer';
+import { parsePdfText } from '../../core/parsers/pdfText';
+import { formatDateBR } from '../../core/reports';
+import type { ParsedStatement, StatementFormat } from '../../core/types';
+import {
+  ACCOUNT_TYPES, accountExternalKey, bankName, findAccountByExternalKey, listAccounts, prepareImport, saveAccount,
+  type AccountType, type AccountWithBalance,
+} from '../../db/repo';
+import { importSession } from '../../lib/importSession';
+import { useAsyncData } from '../../lib/useAsyncData';
+import { PdfPasswordError, PdfTextExtractor, type PdfTextExtractorHandle } from '../../components/PdfTextExtractor';
+import { Button, Card, Chip, colors, Field, Icon, SectionTitle, styles } from '../../components/ui';
+
+const FORMAT_LABEL: Record<StatementFormat, string> = {
+  ofx: 'OFX (Money/Quicken)', csv: 'CSV / texto', qif: 'QIF', xlsx: 'Planilha Excel', ods: 'Planilha OpenDocument', pdf: 'PDF',
+};
+
+interface Loaded {
+  fileName: string;
+  bytes: Uint8Array;
+  format: StatementFormat;
+  pdfLines?: string[];
+  statement: ParsedStatement;
+}
+
+export default function ImportScreen() {
+  const db = useSQLiteContext();
+  const extractor = useRef<PdfTextExtractorHandle>(null);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [accountId, setAccountId] = useState<number | 'new' | null>(null);
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState<AccountType>('checking');
+  const [password, setPassword] = useState<{ base64: string; fileName: string; bytes: Uint8Array; wrong: boolean } | null>(null);
+  const [pwText, setPwText] = useState('');
+
+  const { data: accounts, reload } = useAsyncData(() => listAccounts(db), [db]);
+
+  async function pickFile() {
+    const res = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true, multiple: false });
+    if (res.canceled || !res.assets?.length) return;
+    const asset = res.assets[0];
+    setBusy(true);
+    try {
+      const file = new File(asset.uri);
+      const bytes = await file.bytes();
+      const format = detectFormat(asset.name, bytes);
+      if (format === 'pdf') {
+        const base64 = await file.base64();
+        await readPdf(asset.name, bytes, base64);
+      } else {
+        await onParsed({ fileName: asset.name, bytes, format, statement: parseStatementFile({ fileName: asset.name, bytes }) });
+      }
+    } catch (e) {
+      const msg = e instanceof UnsupportedFormatError ? e.message : `Não foi possível ler o arquivo: ${(e as Error).message}`;
+      Alert.alert('Arquivo não suportado', msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function readPdf(fileName: string, bytes: Uint8Array, base64: string, pw?: string) {
+    try {
+      const lines = await extractor.current!.extract(base64, pw);
+      setPassword(null);
+      await onParsed({ fileName, bytes, format: 'pdf', pdfLines: lines, statement: parsePdfText(lines) });
+    } catch (e) {
+      if (e instanceof PdfPasswordError) {
+        setPwText('');
+        setPassword({ base64, fileName, bytes, wrong: e.wrongPassword });
+        return;
+      }
+      throw e;
+    }
+  }
+
+  async function onParsed(l: Loaded) {
+    if (l.statement.transactions.length === 0) {
+      Alert.alert('Nenhum lançamento encontrado', l.statement.warnings.join('\n') || 'Verifique se o arquivo é um extrato.');
+      return;
+    }
+    setLoaded(l);
+    const ext = accountExternalKey(l.statement.account);
+    const match = await findAccountByExternalKey(db, ext);
+    const suggestedType = l.statement.account?.type ?? 'checking';
+    setNewType(suggestedType);
+    const bank = bankName(l.statement.account?.bankId);
+    setNewName(bank ? `${bank}${suggestedType === 'credit_card' ? ' - Cartão' : ''}` : '');
+    setAccountId(match?.id ?? (accounts?.length === 1 ? accounts[0].id : accounts?.length ? null : 'new'));
+  }
+
+  async function continueToReview() {
+    if (!loaded || accountId === null) return;
+    setBusy(true);
+    try {
+      let id: number;
+      let type: AccountType;
+      if (accountId === 'new') {
+        if (!newName.trim()) { Alert.alert('Informe o nome da conta'); return; }
+        id = await saveAccount(db, {
+          name: newName.trim(), type: newType, bank: bankName(loaded.statement.account?.bankId) ?? null,
+          external_key: accountExternalKey(loaded.statement.account),
+          color: ['#2A9D8F', '#E76F51', '#264653', '#8338EC', '#FB8500', '#3A86FF'][(accounts?.length ?? 0) % 6],
+        });
+        type = newType;
+        reload();
+      } else {
+        id = accountId;
+        type = accounts?.find((a) => a.id === accountId)?.type ?? 'checking';
+      }
+      // Faturas de cartão em CSV/planilha costumam trazer compras como valores positivos.
+      let statement = loaded.statement;
+      if (type === 'credit_card' && loaded.format === 'pdf' && statement.account?.type !== 'credit_card' && loaded.pdfLines) {
+        statement = parsePdfText(loaded.pdfLines, { creditCard: true });
+      } else if (type === 'credit_card' && ['csv', 'xlsx', 'ods', 'qif'].includes(loaded.format)) {
+        statement = adjustCardSigns(statement);
+      }
+      const candidates = await prepareImport(db, id, statement);
+      importSession.set({ fileName: loaded.fileName, accountId: id, statement, candidates });
+      setLoaded(null);
+      setAccountId(null);
+      router.push('/import-review');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const period = loaded ? periodOf(loaded.statement) : null;
+
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <PdfTextExtractor ref={extractor} />
+
+      {!loaded ? (
+        <>
+          <Card>
+            <View style={{ alignItems: 'center', gap: 8, paddingVertical: 8 }}>
+              <Icon name="cloud-upload-outline" size={48} color={colors.primary} />
+              <Text style={[styles.sectionTitle, { textAlign: 'center' }]}>Importe o extrato do seu banco</Text>
+              <Text style={[styles.muted, { textAlign: 'center' }]}>
+                Aceita OFX, CSV, XLSX, ODS, QIF e PDF. Os lançamentos são classificados automaticamente e você revisa antes de salvar.
+                Lançamentos já importados são ignorados.
+              </Text>
+              <Button title="Escolher arquivo" icon="folder-open" onPress={pickFile} loading={busy} style={{ alignSelf: 'stretch', marginTop: 8 }} />
+            </View>
+          </Card>
+          <Card>
+            <SectionTitle>Qual formato escolher?</SectionTitle>
+            <Tip title="OFX — recomendado" text="É o formato mais preciso: traz identificador único de cada lançamento e os dados da conta. No internet banking procure por “Exportar extrato”, “Money”, “OFX” ou “Quicken”." />
+            <Tip title="CSV / Excel" text="Nubank, Inter, C6 e outros oferecem CSV. Faturas de cartão em CSV são ajustadas automaticamente (compras viram saídas)." />
+            <Tip title="PDF" text="Funciona com PDFs gerados pelo banco (não escaneados). PDFs protegidos por senha (geralmente parte do CPF) também são aceitos. Confira os valores na revisão." />
+          </Card>
+        </>
+      ) : (
+        <>
+          <Card>
+            <SectionTitle>Arquivo lido</SectionTitle>
+            <Text style={{ color: colors.text, fontWeight: '600' }} numberOfLines={2}>{loaded.fileName}</Text>
+            <Text style={styles.muted}>Formato: {FORMAT_LABEL[loaded.format]}</Text>
+            <Text style={styles.muted}>{loaded.statement.transactions.length} lançamentos{period ? ` de ${period}` : ''}</Text>
+            {loaded.statement.warnings.slice(0, 3).map((w, i) => (
+              <Text key={i} style={{ color: colors.warning, marginTop: 6, fontSize: 13 }}>⚠ {w}</Text>
+            ))}
+          </Card>
+
+          <Card>
+            <SectionTitle>Para qual conta?</SectionTitle>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {(accounts ?? []).map((a: AccountWithBalance) => (
+                <Chip key={a.id} label={a.name} active={accountId === a.id} color={a.color} onPress={() => setAccountId(a.id)} />
+              ))}
+              <Chip label="+ Nova conta" active={accountId === 'new'} onPress={() => setAccountId('new')} />
+            </View>
+            {accountId === 'new' ? (
+              <View style={{ marginTop: 12 }}>
+                <Field label="Nome da conta" value={newName} onChangeText={setNewName} placeholder="Ex.: Itaú corrente, Nubank cartão" />
+                <Text style={styles.label}>Tipo</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                  {ACCOUNT_TYPES.map((t) => <Chip key={t.value} label={t.label} active={newType === t.value} onPress={() => setNewType(t.value)} />)}
+                </View>
+              </View>
+            ) : null}
+          </Card>
+
+          <Button title="Revisar lançamentos" icon="checkmark-done" onPress={continueToReview} loading={busy} disabled={accountId === null} />
+          <Button title="Cancelar" variant="ghost" onPress={() => { setLoaded(null); setAccountId(null); }} />
+        </>
+      )}
+
+      <Modal visible={!!password} transparent animationType="fade" onRequestClose={() => setPassword(null)}>
+        <View style={{ flex: 1, backgroundColor: '#0006', justifyContent: 'center', padding: 24 }}>
+          <Card>
+            <SectionTitle>PDF protegido</SectionTitle>
+            <Text style={[styles.muted, { marginBottom: 12 }]}>
+              {password?.wrong ? 'Senha incorreta. Tente novamente.' : 'Informe a senha do PDF. Nos extratos bancários costuma ser parte do CPF ou a data de nascimento.'}
+            </Text>
+            <TextInput
+              value={pwText}
+              onChangeText={setPwText}
+              secureTextEntry
+              autoFocus
+              placeholder="Senha"
+              placeholderTextColor={colors.muted}
+              style={[styles.input, { marginBottom: 12 }]}
+            />
+            <Button
+              title="Abrir"
+              loading={busy}
+              onPress={async () => {
+                if (!password) return;
+                setBusy(true);
+                try { await readPdf(password.fileName, password.bytes, password.base64, pwText); }
+                catch (e) { setPassword(null); Alert.alert('Erro', (e as Error).message); }
+                finally { setBusy(false); }
+              }}
+            />
+            <Button title="Cancelar" variant="ghost" onPress={() => setPassword(null)} />
+          </Card>
+        </View>
+      </Modal>
+    </ScrollView>
+  );
+}
+
+function Tip({ title, text }: { title: string; text: string }) {
+  return (
+    <View style={{ marginBottom: 10 }}>
+      <Text style={{ fontWeight: '600', color: colors.text }}>{title}</Text>
+      <Text style={styles.muted}>{text}</Text>
+    </View>
+  );
+}
+
+function periodOf(st: ParsedStatement): string | null {
+  if (!st.transactions.length) return null;
+  const dates = st.transactions.map((t) => t.date).sort();
+  return `${formatDateBR(dates[0])} a ${formatDateBR(dates[dates.length - 1])}`;
+}

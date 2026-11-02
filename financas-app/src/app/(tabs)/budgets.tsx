@@ -1,18 +1,46 @@
 import { useDb } from '../../db/DbProvider';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { useLocalSearchParams } from 'expo-router';
+import { GoalsView } from '../../components/GoalsView';
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { showAlert } from '../../lib/dialog';
 import { budgetProgress, formatBRL, monthlySummary, shiftMonth, totalsByCategory } from '../../core/reports';
 import { parseAmount } from '../../core/text';
 import { categoryMap, listBudgets, listCategories, reportTransactions, setBudget, type Category } from '../../db/repo';
 import { useAsyncData } from '../../lib/useAsyncData';
-import { Button, Card, colors, currentMonth, Icon, Money, MonthSwitcher, ProgressBar, SectionTitle, styles } from '../../components/ui';
+import { Button, Card, Chip, colors, currentMonth, Icon, Money, MonthSwitcher, ProgressBar, SectionTitle, styles } from '../../components/ui';
 
 /**
  * Orçamento mensal por categoria, como no Minhas Economias: define-se um teto
  * por categoria e acompanha-se o quanto já foi gasto no mês.
  */
-export default function Budgets() {
+export default function Planning() {
+  const params = useLocalSearchParams<{ view?: string }>();
+  const [view, setView] = useState<'budgets' | 'goals'>(params.view === 'goals' ? 'goals' : 'budgets');
+  // Vindo do Resumo com ?view=goals: ajusta durante a renderização.
+  const [lastParam, setLastParam] = useState(params.view);
+  if (params.view !== lastParam) {
+    setLastParam(params.view);
+    if (params.view === 'goals' || params.view === 'budgets') setView(params.view);
+  }
+  const tabs = (
+    <View style={{ flexDirection: 'row', gap: 8 }}>
+      <Chip label="Orçamentos" active={view === 'budgets'} onPress={() => setView('budgets')} />
+      <Chip label="Objetivos" active={view === 'goals'} onPress={() => setView('goals')} />
+    </View>
+  );
+  if (view === 'goals') {
+    return (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        {tabs}
+        <GoalsView />
+      </ScrollView>
+    );
+  }
+  return <Budgets header={tabs} />;
+}
+
+function Budgets({ header }: { header: ReactNode }) {
   const db = useDb();
   const [month, setMonth] = useState(currentMonth());
   const [editing, setEditing] = useState<{ cat: Category; value: string; avg: number } | null>(null);
@@ -50,6 +78,7 @@ export default function Budgets() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      {header}
       <MonthSwitcher month={month} onChange={setMonth} />
       <Card>
         <Text style={styles.muted}>Gasto no mês</Text>

@@ -117,6 +117,22 @@ const RPC = {
   resetClassification: { args: z.tuple([z.array(id).min(1).max(5000)]), run: repo.resetClassification },
   listClassificationLog: { args: z.tuple([]), run: repo.listClassificationLog },
   undoClassification: { args: z.tuple([id]), run: repo.undoClassification },
+  listGoals: { args: z.tuple([isoDate]), run: repo.listGoals },
+  getGoal: { args: z.tuple([id, isoDate]), run: repo.getGoal },
+  saveGoal: {
+    args: z.tuple([z.object({
+      id: id.optional(), name: text(120).min(1), template: text(40), icon, color,
+      target_cents: z.number().int().positive().max(1e13), deadline: month.nullable(),
+    })]),
+    run: repo.saveGoal,
+  },
+  deleteGoal: { args: z.tuple([id]), run: repo.deleteGoal },
+  listGoalEntries: { args: z.tuple([id]), run: repo.listGoalEntries },
+  addGoalEntry: {
+    args: z.tuple([id, z.object({ date: isoDate, amountCents: cents.refine((v) => v !== 0), note: text(300).nullable().optional(), initial: z.boolean().optional() })]),
+    run: repo.addGoalEntry,
+  },
+  deleteGoalEntry: { args: z.tuple([id]), run: repo.deleteGoalEntry },
   addManualTransaction: {
     args: z.tuple([z.object({
       accountId: id, date: isoDate, description: text(500).min(1), amountCents: cents, categoryKey: catKey.nullable(), notes: text(2000).optional(),

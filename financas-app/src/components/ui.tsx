@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import type { ComponentProps, ReactNode } from 'react';
+import { useState, type ComponentProps, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps, type ViewStyle } from 'react-native';
 import { formatBRL, monthLabel, shiftMonth } from '../core/reports';
+import { MonthPicker } from './MonthPicker';
 
 export const colors = {
   bg: '#F4F6F8',
@@ -83,13 +84,29 @@ export function Chip({ label, active, onPress, color }: { label: string; active?
   );
 }
 
+/** Mês com setas; tocar no nome abre a escolha rápida de mês e ano. */
 export function MonthSwitcher({ month, onChange }: { month: string; onChange: (m: string) => void }) {
+  const [picking, setPicking] = useState(false);
   return (
     <View style={styles.monthRow}>
       <Pressable accessibilityLabel="Mês anterior" hitSlop={12} onPress={() => onChange(shiftMonth(month, -1))}>
         <Ionicons name="chevron-back" size={22} color={colors.primary} />
       </Pressable>
-      <Text style={styles.monthText}>{monthLabel(month, true)}</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${monthLabel(month, true)}. Escolher mês e ano`}
+        onPress={() => setPicking(true)}
+        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, opacity: pressed ? 0.6 : 1, paddingHorizontal: 10, paddingVertical: 4 })}
+      >
+        <Text style={styles.monthText}>{monthLabel(month, true)}</Text>
+        <Ionicons name="calendar-outline" size={18} color={colors.primary} />
+      </Pressable>
+      <MonthPicker
+        visible={picking}
+        value={month}
+        onClose={() => setPicking(false)}
+        onSelect={(m) => { setPicking(false); onChange(m); }}
+      />
       <Pressable accessibilityLabel="Próximo mês" hitSlop={12} onPress={() => onChange(shiftMonth(month, 1))}>
         <Ionicons name="chevron-forward" size={22} color={colors.primary} />
       </Pressable>

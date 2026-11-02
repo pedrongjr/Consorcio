@@ -54,6 +54,41 @@ export interface Rule {
   direction: 'in' | 'out' | null;
 }
 
+/** Objetivo financeiro ("sonho"), com o total já guardado. */
+export interface Goal {
+  id: number;
+  name: string;
+  template: string;
+  icon: string;
+  color: string;
+  target_cents: number;
+  /** Mês-limite YYYY-MM (inclusive) ou null. */
+  deadline: string | null;
+  created_at: string;
+  saved_cents: number;
+  /** Guardado desde a data pedida em `listGoals` (para calcular o ritmo). */
+  recent_cents: number;
+}
+
+/** Depósito (valor positivo) ou retirada (negativo) de um objetivo. */
+export interface GoalEntry {
+  id: number;
+  goal_id: number;
+  date: string;
+  amount_cents: number;
+  note: string | null;
+}
+
+export interface GoalInput {
+  id?: number;
+  name: string;
+  template: string;
+  icon: string;
+  color: string;
+  target_cents: number;
+  deadline: string | null;
+}
+
 export type ClassificationAction = 'manual' | 'similar' | 'rule' | 'reset';
 
 /** Uma alteração de categoria (de um ou vários lançamentos), que pode ser desfeita. */

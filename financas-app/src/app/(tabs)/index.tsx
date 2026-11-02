@@ -5,7 +5,8 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import {
   budgetProgress, monthLabel, monthlySummary, shiftMonth, totalsByCategory, formatBRL,
 } from '../../core/reports';
-import { categoryMap, latestMonth, listAccounts, listBudgets, listCategories, reportTransactions } from '../../db/repo';
+import { categoryMap, latestMonth, listAccounts, listBudgets, listCategories, listGoals, reportTransactions } from '../../db/repo';
+import { planGoal } from '../../core/goals';
 import { useAsyncData } from '../../lib/useAsyncData';
 import {
   Button, Card, colors, currentMonth, EmptyState, Icon, Money, MonthSwitcher, ProgressBar, SectionTitle, styles,
@@ -27,8 +28,10 @@ export default function Dashboard() {
         if (!hasCurrent) { setMonthState(latest); return undefined; }
       }
     }
-    const [accounts, cats, budgets, txs] = await Promise.all([
+    const today = currentMonth();
+    const [accounts, cats, budgets, txs, goals] = await Promise.all([
       listAccounts(db), listCategories(db), listBudgets(db), reportTransactions(db, shiftMonth(month, -5), month),
+      listGoals(db, `${today}-01`),
     ]);
     const map = categoryMap(cats);
     const monthTxs = txs.filter((t) => t.date.startsWith(month));
@@ -46,6 +49,9 @@ export default function Dashboard() {
         .filter((b) => b.status !== 'ok')
         .map((b) => ({ ...b, name: map.get(b.categoryKey)?.name ?? b.categoryKey })),
       hasData: txs.length > 0 || accounts.some((a) => a.tx_count > 0),
+      goals: goals.map((g) => ({
+        g, plan: planGoal({ targetCents: g.target_cents, savedCents: g.saved_cents, deadline: g.deadline, month: today }),
+      })),
     };
   }, [db, month]);
 
@@ -98,6 +104,35 @@ export default function Dashboard() {
           ))}
         </Card>
       ) : null}
+
+      <Card>
+        <SectionTitle right={(
+          <Pressable onPress={() => router.navigate({ pathname: '/budgets', params: { view: 'goals' } })} hitSlop={8}>
+            <Text style={{ color: colors.primary }}>{data?.goals.length ? 'Ver todos' : 'Criar'}</Text>
+          </Pressable>
+        )}
+        >
+          Objetivos
+        </SectionTitle>
+        {data?.goals.length ? data.goals.slice(0, 3).map(({ g, plan }) => (
+          <Pressable
+            key={g.id}
+            onPress={() => router.push({ pathname: '/goal/[id]', params: { id: String(g.id) } })}
+            style={{ marginBottom: 10 }}
+          >
+            <View style={[styles.row, { marginBottom: 4 }]}>
+              <Icon name={g.icon} size={16} color={g.color} />
+              <Text style={{ flex: 1, color: colors.text, fontWeight: '600' }} numberOfLines={1}>{g.name}</Text>
+              <Text style={styles.muted}>
+                {plan.status === 'done' ? 'alcançado' : plan.monthlyNeededCents ? `${formatBRL(plan.monthlyNeededCents)}/mês` : `${Math.round(plan.progress * 100)}%`}
+              </Text>
+            </View>
+            <ProgressBar ratio={plan.progress} color={g.color} />
+          </Pressable>
+        )) : (
+          <Text style={styles.muted}>Planeje uma viagem, a troca do carro ou a reserva de emergência e veja quanto guardar por mês.</Text>
+        )}
+      </Card>
 
       <Card>
         <SectionTitle>Gastos por categoria</SectionTitle>

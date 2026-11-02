@@ -435,6 +435,51 @@ for (const asOwner of [false, true]) suite(`API web (${asOwner ? 'dono comum' : 
     });
   });
 
+  describe('objetivos', () => {
+    it('cria, registra depósitos e calcula o guardado; outro usuário não vê nem mexe', async () => {
+      const D = new Client();
+      await D.post('/api/auth/register', { email: 'dani@exemplo.com', password: STRONG, name: 'Dani' });
+      const E = new Client();
+      await E.post('/api/auth/register', { email: 'edu@exemplo.com', password: STRONG, name: 'Edu' });
+      const goal = { name: 'Viagem', template: 'viagem', icon: 'airplane', color: '#E5484D', target_cents: 500000, deadline: '2027-06' };
+      const gid = (await D.rpc<number>('saveGoal', goal)).result;
+      expect((await D.rpc('addGoalEntry', gid, { date: '2026-10-01', amountCents: 100000, note: 'inicial' })).status).toBe(200);
+      await D.rpc('addGoalEntry', gid, { date: '2026-11-01', amountCents: 50000 });
+      await D.rpc('addGoalEntry', gid, { date: '2026-11-01', amountCents: 7000, initial: true }); // não conta no ritmo
+      await D.rpc('addGoalEntry', gid, { date: '2026-11-02', amountCents: -20000, note: 'retirada' });
+      const list = (await D.rpc<{ id: number; saved_cents: number; recent_cents: number; deadline: string }[]>('listGoals', '2026-11-01')).result;
+      expect(list).toEqual([expect.objectContaining({ id: gid, saved_cents: 137000, recent_cents: 30000, deadline: '2027-06' })]);
+      expect(typeof list[0].saved_cents).toBe('number');
+      expect((await D.rpc<unknown[]>('listGoalEntries', gid)).result).toHaveLength(4);
+      // Valores inválidos
+      expect((await D.rpc('saveGoal', { ...goal, target_cents: 0 })).status).toBe(400);
+      expect((await D.rpc('saveGoal', { ...goal, deadline: '2027-6' })).status).toBe(400);
+      expect((await D.rpc('addGoalEntry', gid, { date: '2026-11-01', amountCents: 0 })).status).toBe(400);
+      // Isolamento
+      expect((await E.rpc<unknown[]>('listGoals', '2026-01-01')).result).toEqual([]);
+      expect((await E.rpc('getGoal', gid, '2026-01-01')).result).toBeNull();
+      expect((await E.rpc<unknown[]>('listGoalEntries', gid)).result).toEqual([]);
+      expect((await E.rpc('addGoalEntry', gid, { date: '2026-11-01', amountCents: 1 })).status).toBe(404);
+      expect((await E.rpc('saveGoal', { ...goal, id: gid, name: 'Roubado' })).status).toBe(404);
+      await E.rpc('deleteGoal', gid);
+      const entries = (await D.rpc<{ id: number }[]>('listGoalEntries', gid)).result;
+      for (const e of entries) await E.rpc('deleteGoalEntry', e.id);
+      expect((await D.rpc<{ name: string; saved_cents: number }>('getGoal', gid, '2026-01-01')).result).toMatchObject({ name: 'Viagem', saved_cents: 137000 });
+      // Edição e exclusão pelo dono
+      await D.rpc('saveGoal', { ...goal, id: gid, target_cents: 600000, deadline: null });
+      expect((await D.rpc<{ target_cents: number; deadline: null }>('getGoal', gid, '2026-01-01')).result).toMatchObject({ target_cents: 600000, deadline: null });
+      await D.rpc('deleteGoal', gid);
+      expect((await D.rpc<unknown[]>('listGoals', '2026-01-01')).result).toEqual([]);
+      expect((await raw.query('SELECT count(*)::int AS n FROM goal_entries WHERE goal_id = $1', [gid])).rows[0].n).toBe(0);
+    });
+
+    it('saldo das contas chega como número (não texto)', async () => {
+      const F = await registerWithData('fabi@exemplo.com', 'FABI');
+      const bal = (await F.c.rpc<{ balance_cents: unknown }[]>('listAccounts')).result[0].balance_cents;
+      expect(bal).toBe(-12345 + 500000 - 3990);
+    });
+  });
+
   describe('limite de tentativas', () => {
     it('limita tentativas de login por e-mail', async () => {
       const app = createApp({ db, secureCookies: false, limits: { loginPerIp: 100, loginPerEmail: 3, registerPerIp: 100, windowMs: 60_000 } });

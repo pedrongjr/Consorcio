@@ -6,7 +6,7 @@ import { descriptionKey, normalizeText } from '../src/core/text';
 import {
   RULE_TOO_GENERIC,
   type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
-  type ClassifyResult, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
+  type ClassifyResult, type Goal, type GoalEntry, type GoalInput, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
   type TxFilter,
 } from '../src/db/shared';
 import type { Tx } from './db';
@@ -593,4 +593,74 @@ export async function exportCsv(tx: Tx, uid: number): Promise<string> {
     lines.push([`${d}/${m}/${y}`, q(r.account), q(r.description), q(r.parent ?? r.category), q(r.parent ? r.category : ''), value, q(r.notes)].join(';'));
   }
   return lines.join('\n');
+}
+
+// ---------------- Objetivos ----------------
+
+const GOAL_COLS = `g.id, g.name, g.template, g.icon, g.color, g.target_cents, g.deadline,
+  to_char(g.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS created_at,
+  COALESCE(SUM(e.amount_cents), 0)::bigint AS saved_cents,
+  COALESCE(SUM(e.amount_cents) FILTER (WHERE e.date >= $2 AND e.initial = 0), 0)::bigint AS recent_cents`;
+
+export async function listGoals(tx: Tx, uid: number, since: string): Promise<Goal[]> {
+  const r = await tx.query<Goal>(
+    `SELECT ${GOAL_COLS} FROM goals g LEFT JOIN goal_entries e ON e.goal_id = g.id AND e.user_id = g.user_id
+     WHERE g.user_id = $1 GROUP BY g.id ORDER BY g.deadline NULLS LAST, g.id`,
+    [uid, since],
+  );
+  return r.rows;
+}
+
+export async function getGoal(tx: Tx, uid: number, id: number, since: string): Promise<Goal | null> {
+  const r = await tx.query<Goal>(
+    `SELECT ${GOAL_COLS} FROM goals g LEFT JOIN goal_entries e ON e.goal_id = g.id AND e.user_id = g.user_id
+     WHERE g.user_id = $1 AND g.id = $3 GROUP BY g.id`,
+    [uid, since, id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function saveGoal(tx: Tx, uid: number, g: GoalInput): Promise<number> {
+  if (g.id) {
+    const r = await tx.query(
+      `UPDATE goals SET name = $1, template = $2, icon = $3, color = $4, target_cents = $5, deadline = $6
+       WHERE id = $7 AND user_id = $8`,
+      [g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.id, uid],
+    );
+    if (!r.rowCount) throw new NotFoundError('Objetivo');
+    return g.id;
+  }
+  const r = await tx.query<{ id: number }>(
+    `INSERT INTO goals (user_id, name, template, icon, color, target_cents, deadline)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [uid, g.name, g.template, g.icon, g.color, g.target_cents, g.deadline],
+  );
+  return r.rows[0].id;
+}
+
+export async function deleteGoal(tx: Tx, uid: number, id: number): Promise<void> {
+  await tx.query('DELETE FROM goals WHERE id = $1 AND user_id = $2', [id, uid]);
+}
+
+export async function listGoalEntries(tx: Tx, uid: number, goalId: number): Promise<GoalEntry[]> {
+  const r = await tx.query<GoalEntry>(
+    'SELECT id, goal_id, date, amount_cents, note FROM goal_entries WHERE goal_id = $1 AND user_id = $2 ORDER BY date DESC, id DESC',
+    [goalId, uid],
+  );
+  return r.rows;
+}
+
+export async function addGoalEntry(
+  tx: Tx, uid: number, goalId: number, e: { date: string; amountCents: number; note?: string | null; initial?: boolean },
+): Promise<void> {
+  const g = await tx.query('SELECT 1 FROM goals WHERE id = $1 AND user_id = $2', [goalId, uid]);
+  if (!g.rowCount) throw new NotFoundError('Objetivo');
+  await tx.query(
+    'INSERT INTO goal_entries (user_id, goal_id, date, amount_cents, note, initial) VALUES ($1, $2, $3, $4, $5, $6)',
+    [uid, goalId, e.date, e.amountCents, e.note?.trim() || null, e.initial ? 1 : 0],
+  );
+}
+
+export async function deleteGoalEntry(tx: Tx, uid: number, id: number): Promise<void> {
+  await tx.query('DELETE FROM goal_entries WHERE id = $1 AND user_id = $2', [id, uid]);
 }

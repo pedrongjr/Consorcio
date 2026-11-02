@@ -7,7 +7,7 @@ import { descriptionKey, normalizeText } from '../core/text';
 import {
   RULE_TOO_GENERIC,
   type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
-  type ClassifyResult, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
+  type ClassifyResult, type Goal, type GoalEntry, type GoalInput, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
   type TxFilter,
 } from './shared';
 
@@ -518,4 +518,52 @@ export async function exportCsv(db: SQLiteDatabase): Promise<string> {
     lines.push([`${d}/${m}/${y}`, q(r.account), q(r.description), q(r.parent ?? r.category), q(r.parent ? r.category : ''), value, q(r.notes)].join(';'));
   }
   return lines.join('\n');
+}
+
+// ---------------- Objetivos ----------------
+
+const GOAL_SQL = `SELECT g.*, COALESCE(SUM(e.amount_cents), 0) AS saved_cents,
+  COALESCE(SUM(CASE WHEN e.date >= ? AND e.initial = 0 THEN e.amount_cents END), 0) AS recent_cents
+  FROM goals g LEFT JOIN goal_entries e ON e.goal_id = g.id`;
+
+export async function listGoals(db: SQLiteDatabase, since: string): Promise<Goal[]> {
+  return db.getAllAsync<Goal>(`${GOAL_SQL} GROUP BY g.id ORDER BY g.deadline IS NULL, g.deadline, g.id`, since);
+}
+
+export async function getGoal(db: SQLiteDatabase, id: number, since: string): Promise<Goal | null> {
+  return db.getFirstAsync<Goal>(`${GOAL_SQL} WHERE g.id = ? GROUP BY g.id`, since, id);
+}
+
+export async function saveGoal(db: SQLiteDatabase, g: GoalInput): Promise<number> {
+  if (g.id) {
+    await db.runAsync(
+      'UPDATE goals SET name = ?, template = ?, icon = ?, color = ?, target_cents = ?, deadline = ? WHERE id = ?',
+      g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.id,
+    );
+    return g.id;
+  }
+  const r = await db.runAsync(
+    'INSERT INTO goals (name, template, icon, color, target_cents, deadline) VALUES (?, ?, ?, ?, ?, ?)',
+    g.name, g.template, g.icon, g.color, g.target_cents, g.deadline,
+  );
+  return r.lastInsertRowId;
+}
+
+export async function deleteGoal(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM goals WHERE id = ?', id);
+}
+
+export async function listGoalEntries(db: SQLiteDatabase, goalId: number): Promise<GoalEntry[]> {
+  return db.getAllAsync<GoalEntry>('SELECT * FROM goal_entries WHERE goal_id = ? ORDER BY date DESC, id DESC', goalId);
+}
+
+export async function addGoalEntry(
+  db: SQLiteDatabase, goalId: number, e: { date: string; amountCents: number; note?: string | null; initial?: boolean },
+): Promise<void> {
+  await db.runAsync('INSERT INTO goal_entries (goal_id, date, amount_cents, note, initial) VALUES (?, ?, ?, ?, ?)',
+    goalId, e.date, e.amountCents, e.note?.trim() || null, e.initial ? 1 : 0);
+}
+
+export async function deleteGoalEntry(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM goal_entries WHERE id = ?', id);
 }

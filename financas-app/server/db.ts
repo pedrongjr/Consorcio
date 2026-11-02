@@ -3,6 +3,8 @@ import { DEFAULT_CATEGORIES } from '../src/core/categories';
 
 // BIGINT (somas de centavos) chega como string por padrão; os valores cabem em Number.
 pg.types.setTypeParser(20, (v) => Number(v));
+// SUM(bigint) devolve NUMERIC (também string por padrão); aqui só somamos centavos.
+pg.types.setTypeParser(1700, (v) => Number(v));
 
 export type Db = pg.Pool;
 export type Tx = pg.PoolClient;
@@ -11,7 +13,7 @@ export type Tx = pg.PoolClient;
 export const RLS_ROLE = 'financas_rls';
 
 /** Tabelas com dados de usuário. Todas têm `user_id` e Row-Level Security forçado. */
-const USER_TABLES = ['accounts', 'categories', 'imports', 'transactions', 'rules', 'budgets', 'class_log', 'class_log_items'] as const;
+const USER_TABLES = ['accounts', 'categories', 'imports', 'transactions', 'rules', 'budgets', 'class_log', 'class_log_items', 'goals', 'goal_entries'] as const;
 
 export function createPool(connectionString: string): Db {
   const ssl = /sslmode=(require|verify)/.test(connectionString) || process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined;
@@ -156,6 +158,33 @@ CREATE TABLE IF NOT EXISTS class_log_items (
   FOREIGN KEY (log_id, user_id) REFERENCES class_log(id, user_id) ON DELETE CASCADE,
   FOREIGN KEY (transaction_id, user_id) REFERENCES transactions(id, user_id) ON DELETE CASCADE
 );
+
+-- Objetivos ("sonhos") e os depósitos/retiradas de cada um.
+CREATE TABLE IF NOT EXISTS goals (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  template TEXT NOT NULL DEFAULT 'outro',
+  icon TEXT NOT NULL DEFAULT 'star',
+  color TEXT NOT NULL DEFAULT '#74B816',
+  target_cents BIGINT NOT NULL,
+  deadline TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS goal_entries (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  goal_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  amount_cents BIGINT NOT NULL,
+  note TEXT,
+  -- 1 = valor que já estava guardado ao criar o objetivo (não conta no ritmo)
+  initial INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (goal_id, user_id) REFERENCES goals(id, user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS goal_entries_goal ON goal_entries (user_id, goal_id);
 `;
 
 export interface RlsStatus {

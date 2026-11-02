@@ -1,7 +1,7 @@
 import type { CategoryKind, ParsedStatement } from '../core/types';
 import { rpc } from '../lib/api';
 import type {
-  Account, AccountType, AccountWithBalance, Category, ClassificationLogEntry, ClassifyResult, ImportCandidate, ImportRecord, Rule,
+  Account, AccountType, AccountWithBalance, Category, ClassificationLogEntry, ClassifyResult, Goal, GoalEntry, GoalInput, ImportCandidate, ImportRecord, Rule,
   RulePreview, SimilarPreview, Transaction, TxFilter,
 } from './shared';
 
@@ -77,3 +77,12 @@ export const createRule = (_db: Db, pattern: string, categoryKey: string, direct
 export const resetClassification = (_db: Db, ids: number[]) => rpc<ClassifyResult>('resetClassification', ids);
 export const listClassificationLog = (_db: Db) => rpc<ClassificationLogEntry[]>('listClassificationLog');
 export const undoClassification = (_db: Db, logId: number) => rpc<number>('undoClassification', logId);
+
+export const listGoals = (_db: Db, since: string) => rpc<Goal[]>('listGoals', since);
+export const getGoal = (_db: Db, id: number, since: string) => rpc<Goal | null>('getGoal', id, since);
+export const saveGoal = (_db: Db, g: GoalInput) => rpc<number>('saveGoal', g);
+export const deleteGoal = (_db: Db, id: number) => rpc<void>('deleteGoal', id);
+export const listGoalEntries = (_db: Db, goalId: number) => rpc<GoalEntry[]>('listGoalEntries', goalId);
+export const addGoalEntry = (_db: Db, goalId: number, e: { date: string; amountCents: number; note?: string | null; initial?: boolean }) =>
+  rpc<void>('addGoalEntry', goalId, e);
+export const deleteGoalEntry = (_db: Db, id: number) => rpc<void>('deleteGoalEntry', id);

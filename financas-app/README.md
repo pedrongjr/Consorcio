@@ -46,6 +46,15 @@ O workflow `.github/workflows/android-apk.yml` compila o APK a cada push que alt
 
 No celular, abra o arquivo e permita "instalar apps de fontes desconhecidas". O APK é assinado com a chave de depuração, que serve para uso pessoal. Para publicar na Play Store, use o EAS Build (abaixo).
 
+### iPhone (iOS)
+
+O workflow `.github/workflows/ios-ipa.yml` compila o app num Mac do GitHub a cada push e publica `minhas-financas-unsigned.ipa` nas releases `ios-vN`.
+
+O iPhone só instala apps **assinados**, e o arquivo gerado não tem assinatura. Há duas formas de instalar:
+
+* **Sem custo, uso pessoal**: no computador, instale o [Sideloadly](https://sideloadly.io) ou o [AltStore](https://altstore.io). Conecte o iPhone, escolha o `.ipa` e entre com o seu Apple ID; ele assina e instala. No iPhone, ative o **Modo de Desenvolvedor** (Ajustes → Privacidade e Segurança) e confie no perfil em Ajustes → Geral → VPN e Gerenciamento de Dispositivos. Com Apple ID gratuito, a assinatura vale 7 dias e precisa ser renovada.
+* **TestFlight / App Store**: requer conta Apple Developer (US$ 99/ano). Com ela, `npx eas-cli@latest build --platform ios --profile production` e depois `npx eas-cli@latest submit --platform ios`.
+
 ### Gerar os apps para as lojas
 
 ```bash

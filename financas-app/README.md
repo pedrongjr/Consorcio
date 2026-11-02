@@ -37,6 +37,15 @@ npx expo start          # leia o QR code com o Expo Go (Android) ou com a câmer
 
 > O leitor de PDF usa `react-native-webview`, que já vem no Expo Go. Na primeira leitura de PDF, a biblioteca pdf.js é baixada do cdnjs, então é preciso internet nesse momento. O arquivo em si é processado no aparelho.
 
+### Baixar o APK pronto (Android)
+
+O workflow `.github/workflows/android-apk.yml` compila o APK a cada push que altera `financas-app/`:
+
+* **Releases do GitHub**: o arquivo `minhas-financas.apk` fica em cada release `apk-vN` (pré-release).
+* **Actions → APK Android → execução → Artifacts**: o mesmo APK, em zip.
+
+No celular, abra o arquivo e permita "instalar apps de fontes desconhecidas". O APK é assinado com a chave de depuração, que serve para uso pessoal. Para publicar na Play Store, use o EAS Build (abaixo).
+
 ### Gerar os apps para as lojas
 
 ```bash

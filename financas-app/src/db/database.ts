@@ -2,7 +2,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { DEFAULT_CATEGORIES } from '../core/categories';
 
 export const DB_NAME = 'financas.db';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** Cria/migra o banco local. Tudo fica só no aparelho do usuário. */
 export async function migrate(db: SQLiteDatabase): Promise<void> {
@@ -81,6 +81,32 @@ export async function migrate(db: SQLiteDatabase): Promise<void> {
         c.key, c.name, c.kind, c.parent ?? null, c.icon, c.color, sort++,
       );
     }
+  }
+  if (current < 2) {
+    // Histórico de classificações (para desfazer alterações de categoria).
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS class_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,                        -- manual | similar | rule | reset
+        category_key TEXT,
+        label TEXT NOT NULL,
+        rule_id INTEGER,
+        rule_pattern TEXT,
+        rule_direction TEXT,
+        rule_prev_category TEXT,
+        tx_count INTEGER NOT NULL DEFAULT 0,
+        undone INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+      );
+      CREATE TABLE IF NOT EXISTS class_log_items (
+        log_id INTEGER NOT NULL REFERENCES class_log(id) ON DELETE CASCADE,
+        transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+        old_category_key TEXT,
+        old_source TEXT NOT NULL,
+        new_category_key TEXT,
+        PRIMARY KEY (log_id, transaction_id)
+      );
+    `);
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Classifier, suggestRulePattern } from '../classifier';
+import { Classifier, isGenericText, similarityKey, suggestRulePattern } from '../classifier';
 import { DEFAULT_CATEGORIES, DEFAULT_RULES } from '../categories';
 import { budgetProgress, formatBRL, monthlySummary, totalsByCategory, type ReportCategory } from '../reports';
 
@@ -47,10 +47,34 @@ describe('Classifier com regras do usuário e histórico', () => {
   });
   it('aprende com lançamentos já categorizados', () => {
     const k = new Classifier(DEFAULT_RULES, [
-      { descriptionKey: 'PIX ENVIADO JOAO DIARISTA', categoryKey: 'moradia.manutencao', direction: 'out' },
+      { key: 'PIX ENVIADO JOAO DIARISTA', categoryKey: 'moradia.manutencao', direction: 'out' },
     ]);
     const r = k.classify({ description: 'PIX ENVIADO JOAO DIARISTA 12/03', amountCents: -15000 });
     expect(r).toMatchObject({ categoryKey: 'moradia.manutencao', confidence: 'history' });
+  });
+  it('não aprende com descrições genéricas (só "PIX ENVIADO")', () => {
+    const k = new Classifier(DEFAULT_RULES, [
+      { key: similarityKey('PIX ENVIADO', null), categoryKey: 'saude.fono', direction: 'out' },
+      { key: similarityKey('PIX ENVIADO', 'NUCLEO CAMALEAO LTDA'), categoryKey: 'saude.fono', direction: 'out' },
+    ]);
+    expect(k.classify({ description: 'PIX ENVIADO', amountCents: -100 }).confidence).not.toBe('history');
+    expect(k.classify({ description: 'PIX ENVIADO', memo: 'JOAO DA SILVA', amountCents: -100 }).confidence).not.toBe('history');
+    expect(k.classify({ description: 'PIX ENVIADO', memo: 'NUCLEO CAMALEAO LTDA', amountCents: -100 }))
+      .toMatchObject({ categoryKey: 'saude.fono', confidence: 'history' });
+  });
+});
+
+describe('descrições genéricas', () => {
+  it('reconhece textos que só dizem o meio de pagamento', () => {
+    for (const t of ['PIX ENVIADO', 'Pix enviado 01/10 17:39', 'PIX RECEBIDO', 'TED', 'COMPRA CARTAO DEBITO', 'Transferência enviada pelo Pix', 'PAGAMENTO DE BOLETO', '']) {
+      expect(isGenericText(t)).toBe(true);
+    }
+    for (const t of ['PIX ENVIADO NUCLEO CAMALEAO', 'NUCLEO', 'TARIFA', 'IFOOD']) expect(isGenericText(t)).toBe(false);
+  });
+  it('similarityKey usa o complemento quando a descrição é genérica', () => {
+    expect(similarityKey('PIX ENVIADO 01/10 17:39', null)).toBe('');
+    expect(similarityKey('PIX ENVIADO', 'NUCLEO CAMALEAO')).toBe('PIX ENVIADO NUCLEO CAMALEAO');
+    expect(similarityKey('PIX ENVIADO NUCLEO CAMALEAO 01/10', 'qualquer')).toBe('PIX ENVIADO NUCLEO CAMALEAO');
   });
 });
 
@@ -58,6 +82,12 @@ describe('suggestRulePattern', () => {
   it('remove prefixos genéricos', () => {
     expect(suggestRulePattern('COMPRA CARTAO DEB PADARIA BELA VISTA SAO PAULO BR')).toBe('PADARIA BELA VISTA');
     expect(suggestRulePattern('PIX ENVIADO Maria Silva')).toBe('MARIA SILVA');
+    expect(suggestRulePattern('PIX ENVIADO 01/10 17:39 NUCLEO CAMALEAO FONOAUDIOLOGIA LTDA')).toBe('NUCLEO CAMALEAO FONOAUDIOLOGIA');
+    expect(suggestRulePattern('Transferência enviada pelo Pix - Núcleo Camaleão')).toBe('NUCLEO CAMALEAO');
+  });
+  it('usa o complemento ou não sugere nada quando a descrição é genérica', () => {
+    expect(suggestRulePattern('PIX ENVIADO', 'NUCLEO CAMALEAO')).toBe('NUCLEO CAMALEAO');
+    expect(suggestRulePattern('PIX ENVIADO')).toBe('');
   });
 });
 

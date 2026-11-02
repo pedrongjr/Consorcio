@@ -274,7 +274,13 @@ for (const asOwner of [false, true]) suite(`API web (${asOwner ? 'dono comum' : 
     it('B não altera nem apaga dados de A', async () => {
       const [t1, t2] = A.txIds;
       expect((await B.c.rpc('updateTransaction', t1, { description: 'HACK', amount_cents: 1 })).status).toBe(404);
-      expect((await B.c.rpc('applyCategoryToSimilar', t1, 'lazer')).result).toBe(0);
+      expect((await B.c.rpc('classifyTransaction', { txId: t1, categoryKey: 'lazer', applySimilar: true })).status).toBe(404);
+      expect((await B.c.rpc<{ changed: number }>('resetClassification', [t1, t2])).result.changed).toBe(0);
+      expect((await B.c.rpc('previewSimilar', t1)).status).toBe(404);
+      const aLog = (await A.c.rpc<{ logId: number }>('classifyTransaction', { txId: t1, categoryKey: 'lazer', applySimilar: false })).result.logId;
+      expect((await B.c.rpc('undoClassification', aLog)).status).toBe(404);
+      expect((await B.c.rpc<unknown[]>('listClassificationLog')).result).toEqual([]);
+      expect((await A.c.rpc<number>('undoClassification', aLog)).result).toBe(1);
       await B.c.rpc('deleteTransaction', t2);
       await B.c.rpc('deleteAccount', A.accountId);
       await B.c.rpc('undoImport', A.importId);
@@ -339,6 +345,93 @@ for (const asOwner of [false, true]) suite(`API web (${asOwner ? 'dono comum' : 
       expect(left.rows[0].n).toBe(0);
       expect((await A.c.rpc<unknown[]>('listTransactions', {})).result).toHaveLength(3);
       expect((await new Client().post('/api/auth/login', { email: 'zeca@exemplo.com', password: STRONG })).status).toBe(401);
+    });
+  });
+
+  describe('classificação: semelhantes, regras e histórico', () => {
+    const pix = (desc: string, memo: string | undefined, cents: number, day: number) =>
+      ({ date: `2025-03-${String(day).padStart(2, '0')}`, description: desc, memo, amountCents: cents });
+    let C: Client;
+    let ids: Record<string, number>;
+    const cat = async () => Object.fromEntries((await C.rpc<{ id: number; category_key: string | null; category_source: string }[]>('listTransactions', {}))
+      .result.map((t) => [t.id, `${t.category_key}|${t.category_source}`]));
+
+    beforeAll(async () => {
+      C = new Client();
+      await C.post('/api/auth/register', { email: 'carla@exemplo.com', password: STRONG, name: 'Carla' });
+      const accountId = (await C.rpc<number>('saveAccount', { name: 'Conta', type: 'checking' })).result;
+      const st = { format: 'csv', warnings: [], transactions: [
+        pix('PIX ENVIADO 01/03 10:00', 'NUCLEO CAMALEAO', -25000, 1),
+        pix('PIX ENVIADO 02/03 11:00', 'JOAO DA SILVA', -5000, 2),
+        pix('PIX ENVIADO 03/03 12:00', undefined, -7000, 3),
+        pix('PIX ENVIADO 08/03 10:00', 'NUCLEO CAMALEAO', -25000, 8),
+        pix('PIX ENVIADO NUCLEO CAMALEAO', undefined, -25000, 9),
+        pix('PADARIA DOCE', undefined, -1500, 10),
+      ] };
+      const candidates = (await C.rpc<unknown[]>('prepareImport', accountId, st)).result;
+      await C.rpc('commitImport', { accountId, fileName: 'pix.csv', format: 'csv', candidates });
+      const txs = (await C.rpc<{ id: number; description: string; memo: string | null; date: string }[]>('listTransactions', {})).result;
+      ids = Object.fromEntries(txs.map((t) => [t.date.slice(8), t.id]));
+    });
+
+    it('"PIX ENVIADO" sozinho não é tratado como mesma descrição', async () => {
+      expect((await C.rpc('previewSimilar', ids['03'])).result).toEqual({ count: 0, generic: true });
+      // Com o nome no complemento, só os PIX para o mesmo destinatário contam.
+      expect((await C.rpc('previewSimilar', ids['01'])).result).toEqual({ count: 1, generic: false });
+      const before = await cat();
+      const r = (await C.rpc<{ changed: number; similar: number; logId: number }>('classifyTransaction', { txId: ids['01'], categoryKey: 'saude', applySimilar: true })).result;
+      expect(r).toMatchObject({ changed: 2, similar: 1 });
+      const after = await cat();
+      expect(after[ids['01']]).toBe('saude|user');
+      expect(after[ids['08']]).toBe('saude|user');
+      for (const d of ['02', '03', '09', '10']) expect(after[ids[d]]).toBe(before[ids[d]]);
+    });
+
+    it('recusa regra genérica e mostra o alcance de uma regra específica', async () => {
+      const g = await C.rpc('classifyTransaction', { txId: ids['09'], categoryKey: 'saude', applySimilar: false, rule: { pattern: 'PIX ENVIADO', direction: 'out' } });
+      expect(g.status).toBe(400);
+      expect(g.error).toMatch(/genérico/);
+      expect((await C.rpc('saveRule', 'pix enviado', 'saude', 'out')).status).toBe(400);
+      expect((await C.rpc('createRule', 'TED', 'saude', null)).status).toBe(400);
+      expect((await C.rpc<{ generic: boolean }>('previewRule', 'Pix Enviado', 'out')).result.generic).toBe(true);
+      const p = (await C.rpc<{ count: number; examples: string[] }>('previewRule', 'NUCLEO CAMALEAO', 'out')).result;
+      expect(p.count).toBe(3); // a regra olha descrição + complemento: dias 01, 08 e 09
+    });
+
+    it('regra específica + histórico: desfazer volta tudo e apaga a regra', async () => {
+      const before = await cat();
+      const r = (await C.rpc<{ logId: number; byRule: number }>('classifyTransaction', {
+        txId: ids['10'], categoryKey: 'alimentacao.padaria', applySimilar: false, rule: { pattern: 'NUCLEO CAMALEAO', direction: 'out' },
+      })).result;
+      expect(r.byRule).toBe(1); // 01 e 08 já foram categorizados à mão e não mudam
+      expect((await cat())[ids['09']]).toBe('alimentacao.padaria|user');
+      const log = (await C.rpc<{ id: number; action: string; rule_pattern: string; tx_count: number }[]>('listClassificationLog')).result;
+      expect(log[0]).toMatchObject({ id: r.logId, action: 'rule', rule_pattern: 'NUCLEO CAMALEAO', tx_count: 2 });
+      expect((await C.rpc<number>('undoClassification', r.logId)).result).toBe(2);
+      expect(await cat()).toEqual(before);
+      expect((await C.rpc<{ pattern: string }[]>('listRules')).result.map((x) => x.pattern)).not.toContain('NUCLEO CAMALEAO');
+      // Desfazer de novo não faz nada.
+      expect((await C.rpc<number>('undoClassification', r.logId)).result).toBe(0);
+    });
+
+    it('desfazer preserva o que foi alterado depois', async () => {
+      const a = (await C.rpc<{ logId: number }>('classifyTransaction', { txId: ids['02'], categoryKey: 'lazer', applySimilar: false })).result;
+      await C.rpc('classifyTransaction', { txId: ids['02'], categoryKey: 'educacao', applySimilar: false });
+      expect((await C.rpc<number>('undoClassification', a.logId)).result).toBe(0);
+      expect((await cat())[ids['02']]).toBe('educacao|user');
+    });
+
+    it('refazer a classificação automática corrige uma alteração em massa', async () => {
+      // Simula o estrago antigo: todos os PIX marcados à mão como "saude".
+      for (const d of ['01', '02', '03', '08', '09']) await C.rpc('classifyTransaction', { txId: ids[d], categoryKey: 'saude', applySimilar: false });
+      const all = [ids['01'], ids['02'], ids['03'], ids['08'], ids['09']];
+      const r = (await C.rpc<{ logId: number; changed: number }>('resetClassification', all)).result;
+      expect(r.changed).toBe(5);
+      const after = await cat();
+      for (const id of all) expect(after[id].endsWith('|user')).toBe(false);
+      expect(after[ids['02']].startsWith('saude|')).toBe(false);
+      expect((await C.rpc<number>('undoClassification', r.logId)).result).toBe(5);
+      for (const id of all) expect((await cat())[id]).toBe('saude|user');
     });
   });
 

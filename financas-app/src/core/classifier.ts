@@ -11,7 +11,8 @@ export interface Classification {
 
 /** Lançamento já categorizado pelo usuário, usado para aprender por semelhança. */
 export interface HistoryEntry {
-  descriptionKey: string;
+  /** `similarityKey(descrição, complemento)`; vazio = genérico, ignorado. */
+  key: string;
   categoryKey: string;
   direction: 'in' | 'out';
 }
@@ -47,10 +48,10 @@ export class Classifier {
   constructor(rules: CategoryRule[], history: HistoryEntry[] = []) {
     this.compiled = rules.filter((r) => r.pattern.trim()).map(compile).sort((a, b) => b.weight - a.weight);
     for (const h of history) {
-      if (!h.descriptionKey) continue;
-      const entry = this.history.get(h.descriptionKey) ?? {};
+      if (!h.key) continue;
+      const entry = this.history.get(h.key) ?? {};
       entry[h.direction] = h.categoryKey; // o mais recente vence
-      this.history.set(h.descriptionKey, entry);
+      this.history.set(h.key, entry);
     }
   }
 
@@ -66,7 +67,8 @@ export class Classifier {
       if (c.rule.direction && c.rule.direction !== direction) continue;
       if (c.re.test(text)) return { categoryKey: c.rule.categoryKey, rule: c.rule, confidence: 'user' };
     }
-    const learned = this.history.get(descriptionKey(tx.description))?.[direction];
+    const simKey = similarityKey(tx.description, tx.memo);
+    const learned = simKey ? this.history.get(simKey)?.[direction] : undefined;
     if (learned) return { categoryKey: learned, rule: null, confidence: 'history' };
     for (const c of this.compiled) {
       if (c.rule.source === 'user') continue;
@@ -82,16 +84,64 @@ export class Classifier {
 }
 
 /**
- * Sugere um padrão de regra a partir de uma descrição, removendo prefixos
- * genéricos de meio de pagamento ("COMPRA CARTAO", "PIX ENVIADO", ...).
+ * Palavras que só descrevem o meio de pagamento ("PIX ENVIADO", "COMPRA CARTAO
+ * DEBITO", "TED"...). Uma descrição ou regra feita só delas vale para quase
+ * tudo — não serve para identificar um lançamento.
  */
-export function suggestRulePattern(description: string): string {
-  let key = descriptionKey(description);
-  key = key
-    .replace(/^(COMPRA(S)? (COM )?(CARTAO|CART|DEB(ITO)?|CRED(ITO)?|ELO|VISA|MASTER(CARD)?)( (DEB|CRED|ELETRON))?|COMPRA|PAG(AMENTO|TO)? (DE )?(BOLETO|TITULO|CONTA)|DEBITO AUTOMATICO|DEB AUTOM?|PIX (ENVIADO|RECEBIDO|TRANSF|QRS?|QR CODE)|TRANSF(ERENCIA)? PIX|PIX|TED|DOC|ELO|VISA|MASTERCARD|APLICACAO|DEB|CRED) +/, '')
+const GENERIC_WORDS = new Set(`
+  PIX ENVIADO ENVIADA ENVIADOS RECEBIDO RECEBIDA RECEBIDOS ENVIO RECEB REMETIDO TRANSF TRANSFERENCIA TRANSFERENCIAS
+  TRANSFERIDO TRANSFERIDA TRANSFER TED DOC TEV QR QRS QRCODE CODE CHAVE PAGAMENTO PAGAMENTOS PAGTO PGTO PAG PAGO
+  COMPRA COMPRAS CARTAO CART CARD DEBITO DEB CREDITO CRED ELO VISA MASTER MASTERCARD MAESTRO ELECTRON BOLETO
+  BOLETOS TITULO TITULOS CONTA CONTAS AUTOMATICO AUTOMATICA AUTOM AUT ELETRONICO ELETRONICA ELETRON SAIDA ENTRADA
+  LANCAMENTO OPERACAO MOV MOVIMENTACAO AGENDADO AGENDADA AGENDAMENTO INTERNET APP MOBILE CEL ONLINE BCO BANCO
+  INSTITUICAO TITULARIDADE MESMA OUTRA OUTRO CPF CNPJ AG AGENCIA CC CP DE DA DO DAS DOS PARA PELO PELA EM COM
+  NO NA NOS NAS E A O VIA REF DEST REM FAV FAVORECIDO
+`.split(/\s+/).filter(Boolean));
+
+/** Palavras significativas (sem números soltos nem letras isoladas). */
+function meaningfulWords(text: string): string[] {
+  return descriptionKey(text).split(' ').filter((w) => w.length > 1 && !/^\d+$/.test(w));
+}
+
+/** `true` quando o texto só tem palavras de meio de pagamento (ex.: "PIX ENVIADO"). */
+export function isGenericText(text: string): boolean {
+  return meaningfulWords(text).every((w) => GENERIC_WORDS.has(w));
+}
+
+/**
+ * Chave para achar lançamentos "iguais" a este. Usa a descrição; se ela for
+ * genérica (muitos bancos põem só "PIX ENVIADO" e o nome no complemento),
+ * inclui o complemento. Se ainda assim for genérica, devolve '' — não há como
+ * dizer quais lançamentos são semelhantes.
+ */
+export function similarityKey(description: string, memo?: string | null): string {
+  const k = descriptionKey(description);
+  if (!isGenericText(k)) return k;
+  if (memo?.trim()) {
+    const k2 = descriptionKey(`${description} ${memo}`);
+    if (!isGenericText(k2)) return k2;
+  }
+  return '';
+}
+
+/**
+ * Sugere um padrão de regra a partir de uma descrição, removendo as palavras
+ * de meio de pagamento ("COMPRA CARTAO", "PIX ENVIADO", ...). Devolve '' quando
+ * não sobra nada que identifique o lançamento.
+ */
+export function suggestRulePattern(description: string, memo?: string | null): string {
+  const text = isGenericText(description) && memo ? `${description} ${memo}` : description;
+  const words = descriptionKey(text)
     .replace(/\b(BR|BRA|SAO PAULO|RIO DE JANEIRO|SP|RJ|MG|LTDA|S A|SA|ME|EIRELI|EPP)\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const words = key.split(' ').filter(Boolean);
-  return words.slice(0, 3).join(' ');
+    .split(' ')
+    .filter((w) => w.length > 1 && !/^\d+$/.test(w));
+  // Remove o prefixo de meio de pagamento e mantém o que vem depois.
+  let i = 0;
+  while (i < words.length && GENERIC_WORDS.has(words[i])) i++;
+  return words.slice(i, i + 3).join(' ');
+}
+
+/** Texto para exibir: se a descrição for genérica ("PIX ENVIADO"), junta o complemento (nome de quem recebeu). */
+export function displayDescription(description: string, memo?: string | null): string {
+  return memo?.trim() && isGenericText(description) ? `${description} · ${memo.trim()}` : description;
 }

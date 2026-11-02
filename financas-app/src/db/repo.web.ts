@@ -1,7 +1,8 @@
 import type { CategoryKind, ParsedStatement } from '../core/types';
 import { rpc } from '../lib/api';
 import type {
-  Account, AccountType, AccountWithBalance, Category, ImportCandidate, ImportRecord, Rule, Transaction, TxFilter,
+  Account, AccountType, AccountWithBalance, Category, ClassificationLogEntry, ClassifyResult, ImportCandidate, ImportRecord, Rule,
+  RulePreview, SimilarPreview, Transaction, TxFilter,
 } from './shared';
 
 /**
@@ -46,7 +47,6 @@ export const updateTransaction = (
   id: number,
   patch: { category_key?: string | null; notes?: string | null; description?: string; amount_cents?: number; date?: string },
 ) => rpc<void>('updateTransaction', id, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
-export const applyCategoryToSimilar = (_db: Db, txId: number, categoryKey: string) => rpc<number>('applyCategoryToSimilar', txId, categoryKey);
 export const addManualTransaction = (
   _db: Db,
   t: { accountId: number; date: string; description: string; amountCents: number; categoryKey: string | null; notes?: string },
@@ -65,3 +65,15 @@ export const reportTransactions = (_db: Db, fromMonth: string, toMonth: string) 
   rpc<{ date: string; amountCents: number; categoryKey: string | null }[]>('reportTransactions', fromMonth, toMonth);
 export const latestMonth = (_db: Db) => rpc<string | null>('latestMonth');
 export const exportCsv = (_db: Db) => rpc<string>('exportCsv');
+
+export const previewSimilar = (_db: Db, txId: number) => rpc<SimilarPreview>('previewSimilar', txId);
+export const previewRule = (_db: Db, pattern: string, direction: 'in' | 'out' | null) => rpc<RulePreview>('previewRule', pattern, direction);
+export const classifyTransaction = (
+  _db: Db,
+  args: { txId: number; categoryKey: string; applySimilar: boolean; rule?: { pattern: string; direction: 'in' | 'out' | null } | null },
+) => rpc<ClassifyResult>('classifyTransaction', args);
+export const createRule = (_db: Db, pattern: string, categoryKey: string, direction: 'in' | 'out' | null) =>
+  rpc<ClassifyResult>('createRule', pattern, categoryKey, direction);
+export const resetClassification = (_db: Db, ids: number[]) => rpc<ClassifyResult>('resetClassification', ids);
+export const listClassificationLog = (_db: Db) => rpc<ClassificationLogEntry[]>('listClassificationLog');
+export const undoClassification = (_db: Db, logId: number) => rpc<number>('undoClassification', logId);

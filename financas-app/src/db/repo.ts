@@ -1,11 +1,14 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type { CategoryKind, CategoryRule, ParsedStatement } from '../core/types';
-import { Classifier, type HistoryEntry } from '../core/classifier';
+import { Classifier, displayDescription, isGenericText, similarityKey, type HistoryEntry } from '../core/classifier';
 import { DEFAULT_RULES } from '../core/categories';
 import { dedupeKeys } from '../core/importer';
 import { descriptionKey, normalizeText } from '../core/text';
-import type {
-  Account, AccountType, AccountWithBalance, Category, ImportCandidate, ImportRecord, Rule, Transaction, TxFilter,
+import {
+  RULE_TOO_GENERIC,
+  type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
+  type ClassifyResult, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
+  type TxFilter,
 } from './shared';
 
 export * from './shared';
@@ -92,6 +95,7 @@ export async function listRules(db: SQLiteDatabase): Promise<Rule[]> {
 export async function saveRule(db: SQLiteDatabase, pattern: string, categoryKey: string, direction: 'in' | 'out' | null): Promise<void> {
   const p = normalizeText(pattern);
   if (!p) return;
+  if (isGenericText(p)) throw new Error(RULE_TOO_GENERIC);
   await db.runAsync(
     `INSERT INTO rules (pattern, category_key, direction) VALUES (?, ?, ?)
      ON CONFLICT(pattern, direction) DO UPDATE SET category_key = excluded.category_key`,
@@ -112,12 +116,12 @@ export async function buildClassifier(db: SQLiteDatabase): Promise<Classifier> {
     direction: r.direction ?? undefined,
     source: 'user',
   }));
-  const history = await db.getAllAsync<HistoryEntry>(`
-    SELECT description_key AS descriptionKey, category_key AS categoryKey,
-           CASE WHEN amount_cents >= 0 THEN 'in' ELSE 'out' END AS direction
-    FROM transactions
-    WHERE category_source = 'user' AND category_key IS NOT NULL AND description_key <> ''
-    ORDER BY id`);
+  const history: HistoryEntry[] = (await db.getAllAsync<{ description: string; memo: string | null; category_key: string; amount_cents: number }>(`
+    SELECT description, memo, category_key, amount_cents FROM transactions
+    WHERE category_source = 'user' AND category_key IS NOT NULL
+    ORDER BY id`)).map((r) => ({
+    key: similarityKey(r.description, r.memo), categoryKey: r.category_key, direction: r.amount_cents >= 0 ? 'in' : 'out',
+  }));
   // Regras padrão de categorias apagadas pelo usuário são descartadas.
   return new Classifier([...userRules, ...DEFAULT_RULES.filter((r) => validKeys.has(r.categoryKey))], history);
 }
@@ -195,21 +199,207 @@ export async function updateTransaction(
   await db.runAsync(`UPDATE transactions SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
+// ---------------- Classificação (com histórico para desfazer) ----------------
+
+type TxRow = { id: number; description: string; memo: string | null; amount_cents: number; category_key: string | null; category_source: string };
+const TX_COLS = 'id, description, memo, amount_cents, category_key, category_source';
+
+async function txRow(db: SQLiteDatabase, id: number): Promise<TxRow> {
+  const r = await db.getFirstAsync<TxRow>(`SELECT ${TX_COLS} FROM transactions WHERE id = ?`, id);
+  if (!r) throw new Error('Lançamento não encontrado.');
+  return r;
+}
+
+async function validCategory(db: SQLiteDatabase, key: string | null): Promise<string | null> {
+  if (!key) return null;
+  return (await db.getFirstAsync('SELECT 1 FROM categories WHERE key = ?', key)) ? key : null;
+}
+
+/** Lançamentos com a mesma descrição (e mesmo sentido) — vazio se a descrição for genérica. */
+async function similarRows(db: SQLiteDatabase, t: TxRow): Promise<TxRow[]> {
+  const key = similarityKey(t.description, t.memo);
+  if (!key) return [];
+  const rows = await db.getAllAsync<TxRow>(
+    `SELECT ${TX_COLS} FROM transactions WHERE description_key = ? AND id <> ? AND (amount_cents >= 0) = (? >= 0)`,
+    descriptionKey(t.description), t.id, t.amount_cents,
+  );
+  return rows.filter((x) => similarityKey(x.description, x.memo) === key);
+}
+
+async function ruleRows(db: SQLiteDatabase, pattern: string, direction: 'in' | 'out' | null, onlyAuto: boolean): Promise<TxRow[]> {
+  const c = new Classifier([{ pattern, categoryKey: '_', direction: direction ?? undefined, source: 'user' }]);
+  const rows = await db.getAllAsync<TxRow>(
+    `SELECT ${TX_COLS} FROM transactions ${onlyAuto ? "WHERE category_source <> 'user'" : ''} ORDER BY date DESC, id DESC`,
+  );
+  return rows.filter((x) => c.classify({ description: x.description, memo: x.memo ?? undefined, amountCents: x.amount_cents }).rule);
+}
+
+export async function previewSimilar(db: SQLiteDatabase, txId: number): Promise<SimilarPreview> {
+  const t = await txRow(db, txId);
+  if (!similarityKey(t.description, t.memo)) return { count: 0, generic: true };
+  return { count: (await similarRows(db, t)).length, generic: false };
+}
+
+export async function previewRule(db: SQLiteDatabase, pattern: string, direction: 'in' | 'out' | null): Promise<RulePreview> {
+  const p = normalizeText(pattern);
+  if (!p) return { count: 0, generic: false, examples: [] };
+  if (isGenericText(p)) return { count: 0, generic: true, examples: [] };
+  const rows = await ruleRows(db, p, direction, false);
+  return { count: rows.length, generic: false, examples: [...new Set(rows.map((r) => displayDescription(r.description, r.memo)))].slice(0, 3) };
+}
+
+class LogWriter {
+  private items: { id: number; oldCat: string | null; oldSource: string; newCat: string | null }[] = [];
+  private seen = new Set<number>();
+  constructor(private db: SQLiteDatabase) {}
+
+  async set(row: TxRow, categoryKey: string | null, source: string): Promise<boolean> {
+    if (this.seen.has(row.id)) return false;
+    if (row.category_key === categoryKey && row.category_source === source) return false;
+    this.seen.add(row.id);
+    await this.db.runAsync('UPDATE transactions SET category_key = ?, category_source = ? WHERE id = ?', categoryKey, source, row.id);
+    this.items.push({ id: row.id, oldCat: row.category_key, oldSource: row.category_source, newCat: categoryKey });
+    return true;
+  }
+
+  get count() { return this.items.length; }
+
+  async save(entry: {
+    action: ClassificationAction; categoryKey: string | null; label: string;
+    rule?: { id: number; pattern: string; direction: 'in' | 'out' | null; prevCategory: string | null };
+  }): Promise<number | null> {
+    if (!this.items.length && !entry.rule) return null;
+    const r = await this.db.runAsync(
+      `INSERT INTO class_log (action, category_key, label, rule_id, rule_pattern, rule_direction, rule_prev_category, tx_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      entry.action, entry.categoryKey, entry.label.slice(0, 300), entry.rule?.id ?? null, entry.rule?.pattern ?? null,
+      entry.rule?.direction ?? null, entry.rule?.prevCategory ?? null, this.items.length,
+    );
+    const id = r.lastInsertRowId;
+    for (const it of this.items) {
+      await this.db.runAsync(
+        'INSERT INTO class_log_items (log_id, transaction_id, old_category_key, old_source, new_category_key) VALUES (?, ?, ?, ?, ?)',
+        id, it.id, it.oldCat, it.oldSource, it.newCat,
+      );
+    }
+    await this.db.runAsync('DELETE FROM class_log WHERE id NOT IN (SELECT id FROM class_log ORDER BY id DESC LIMIT 200)');
+    return id;
+  }
+}
+
+async function applyNewRule(
+  db: SQLiteDatabase, log: LogWriter, pattern: string, categoryKey: string, direction: 'in' | 'out' | null,
+): Promise<{ id: number; pattern: string; direction: 'in' | 'out' | null; prevCategory: string | null; applied: number }> {
+  const p = normalizeText(pattern);
+  if (!p || isGenericText(p)) throw new Error(RULE_TOO_GENERIC);
+  const prev = await db.getFirstAsync<{ category_key: string }>('SELECT category_key FROM rules WHERE pattern = ? AND direction IS ?', p, direction);
+  await saveRule(db, p, categoryKey, direction);
+  const id = (await db.getFirstAsync<{ id: number }>('SELECT id FROM rules WHERE pattern = ? AND direction IS ?', p, direction))!.id;
+  let applied = 0;
+  for (const r of await ruleRows(db, p, direction, true)) if (await log.set(r, categoryKey, 'user')) applied++;
+  return { id, pattern: p, direction, prevCategory: prev?.category_key ?? null, applied };
+}
+
 /**
- * Aplica a categoria a todos os lançamentos com a mesma descrição normalizada
- * que não foram categorizados manualmente. Retorna quantos mudaram.
+ * Muda a categoria de um lançamento e, opcionalmente, dos semelhantes e/ou
+ * cria uma regra. Tudo fica registrado no histórico para poder ser desfeito.
  */
-export async function applyCategoryToSimilar(db: SQLiteDatabase, txId: number, categoryKey: string): Promise<number> {
-  const tx = await db.getFirstAsync<{ description_key: string; amount_cents: number }>(
-    'SELECT description_key, amount_cents FROM transactions WHERE id = ?', txId,
+export async function classifyTransaction(
+  db: SQLiteDatabase,
+  args: { txId: number; categoryKey: string; applySimilar: boolean; rule?: { pattern: string; direction: 'in' | 'out' | null } | null },
+): Promise<ClassifyResult> {
+  if (args.rule && isGenericText(args.rule.pattern)) throw new Error(RULE_TOO_GENERIC);
+  let out: ClassifyResult = { logId: null, changed: 0, similar: 0, byRule: 0 };
+  await db.withTransactionAsync(async () => {
+    const t = await txRow(db, args.txId);
+    const log = new LogWriter(db);
+    await log.set(t, args.categoryKey, 'user');
+    let similar = 0;
+    if (args.applySimilar) for (const r of await similarRows(db, t)) if (await log.set(r, args.categoryKey, 'user')) similar++;
+    const rule = args.rule ? await applyNewRule(db, log, args.rule.pattern, args.categoryKey, args.rule.direction) : undefined;
+    const logId = await log.save({
+      action: rule ? 'rule' : similar ? 'similar' : 'manual', categoryKey: args.categoryKey, label: displayDescription(t.description, t.memo), rule,
+    });
+    out = { logId, changed: log.count, similar, byRule: rule?.applied ?? 0 };
+  });
+  return out;
+}
+
+/** Cria uma regra (tela de regras) e a aplica aos lançamentos não categorizados à mão. */
+export async function createRule(
+  db: SQLiteDatabase, pattern: string, categoryKey: string, direction: 'in' | 'out' | null,
+): Promise<ClassifyResult> {
+  let out: ClassifyResult = { logId: null, changed: 0, similar: 0, byRule: 0 };
+  await db.withTransactionAsync(async () => {
+    const log = new LogWriter(db);
+    const rule = await applyNewRule(db, log, pattern, categoryKey, direction);
+    const logId = await log.save({ action: 'rule', categoryKey, label: `Regra “${rule.pattern}”`, rule });
+    out = { logId, changed: log.count, similar: 0, byRule: rule.applied };
+  });
+  return out;
+}
+
+/** Descarta a categoria escolhida à mão destes lançamentos e os classifica de novo automaticamente. */
+export async function resetClassification(db: SQLiteDatabase, ids: number[]): Promise<ClassifyResult> {
+  const unique = [...new Set(ids)];
+  let out: ClassifyResult = { logId: null, changed: 0, similar: 0, byRule: 0 };
+  await db.withTransactionAsync(async () => {
+    const rows: TxRow[] = [];
+    for (let i = 0; i < unique.length; i += 500) {
+      const chunk = unique.slice(i, i + 500);
+      const marks = chunk.map(() => '?').join(',');
+      rows.push(...await db.getAllAsync<TxRow>(`SELECT ${TX_COLS} FROM transactions WHERE id IN (${marks})`, chunk));
+      await db.runAsync(`UPDATE transactions SET category_source = 'none' WHERE id IN (${marks}) AND category_source = 'user'`, chunk);
+    }
+    const classifier = await buildClassifier(db);
+    const log = new LogWriter(db);
+    for (const r of rows) {
+      const c = classifier.classify({ description: r.description, memo: r.memo ?? undefined, amountCents: r.amount_cents });
+      if (!(await log.set(r, c.categoryKey, c.confidence))) {
+        await db.runAsync('UPDATE transactions SET category_source = ? WHERE id = ?', r.category_source, r.id);
+      }
+    }
+    const logId = await log.save({ action: 'reset', categoryKey: null, label: `${rows.length} lançamento(s) reclassificados automaticamente` });
+    out = { logId, changed: log.count, similar: 0, byRule: 0 };
+  });
+  return out;
+}
+
+export async function listClassificationLog(db: SQLiteDatabase): Promise<ClassificationLogEntry[]> {
+  return db.getAllAsync<ClassificationLogEntry>(
+    'SELECT id, action, category_key, label, rule_pattern, tx_count, undone, created_at FROM class_log ORDER BY id DESC LIMIT 200',
   );
-  if (!tx?.description_key) return 0;
-  const r = await db.runAsync(
-    `UPDATE transactions SET category_key = ?, category_source = 'user'
-     WHERE description_key = ? AND id <> ? AND (amount_cents >= 0) = (? >= 0)`,
-    categoryKey, tx.description_key, txId, tx.amount_cents,
-  );
-  return r.changes;
+}
+
+/** Desfaz um registro do histórico (ver a versão do servidor). Retorna quantos lançamentos voltaram. */
+export async function undoClassification(db: SQLiteDatabase, logId: number): Promise<number> {
+  let restored = 0;
+  await db.withTransactionAsync(async () => {
+    const log = await db.getFirstAsync<{ undone: number; category_key: string | null; rule_id: number | null; rule_pattern: string | null; rule_prev_category: string | null }>(
+      'SELECT undone, category_key, rule_id, rule_pattern, rule_prev_category FROM class_log WHERE id = ?', logId,
+    );
+    if (!log) throw new Error('Registro não encontrado.');
+    if (log.undone) return;
+    const items = await db.getAllAsync<{ transaction_id: number; old_category_key: string | null; old_source: string; new_category_key: string | null }>(
+      'SELECT transaction_id, old_category_key, old_source, new_category_key FROM class_log_items WHERE log_id = ?', logId,
+    );
+    for (const it of items) {
+      const r = await db.runAsync(
+        'UPDATE transactions SET category_key = ?, category_source = ? WHERE id = ? AND category_key IS ?',
+        await validCategory(db, it.old_category_key), it.old_source, it.transaction_id, it.new_category_key,
+      );
+      restored += r.changes;
+    }
+    if (log.rule_id && log.rule_pattern) {
+      if (log.rule_prev_category && (await validCategory(db, log.rule_prev_category))) {
+        await db.runAsync('UPDATE rules SET category_key = ? WHERE id = ? AND category_key = ?', log.rule_prev_category, log.rule_id, log.category_key);
+      } else {
+        await db.runAsync('DELETE FROM rules WHERE id = ? AND pattern = ? AND category_key IS ?', log.rule_id, log.rule_pattern, log.category_key);
+      }
+    }
+    await db.runAsync('UPDATE class_log SET undone = 1 WHERE id = ?', logId);
+  });
+  return restored;
 }
 
 export async function addManualTransaction(

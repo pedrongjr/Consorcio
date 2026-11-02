@@ -104,7 +104,19 @@ const RPC = {
     })]),
     run: repo.updateTransaction,
   },
-  applyCategoryToSimilar: { args: z.tuple([id, catKey]), run: repo.applyCategoryToSimilar },
+  previewSimilar: { args: z.tuple([id]), run: repo.previewSimilar },
+  previewRule: { args: z.tuple([text(200), direction]), run: repo.previewRule },
+  classifyTransaction: {
+    args: z.tuple([z.object({
+      txId: id, categoryKey: catKey, applySimilar: z.boolean(),
+      rule: z.object({ pattern: text(200).min(1), direction }).nullable().optional(),
+    })]),
+    run: repo.classifyTransaction,
+  },
+  createRule: { args: z.tuple([text(200).min(1), catKey, direction]), run: repo.createRule },
+  resetClassification: { args: z.tuple([z.array(id).min(1).max(5000)]), run: repo.resetClassification },
+  listClassificationLog: { args: z.tuple([]), run: repo.listClassificationLog },
+  undoClassification: { args: z.tuple([id]), run: repo.undoClassification },
   addManualTransaction: {
     args: z.tuple([z.object({
       accountId: id, date: isoDate, description: text(500).min(1), amountCents: cents, categoryKey: catKey.nullable(), notes: text(2000).optional(),
@@ -320,6 +332,7 @@ export function createApp(opts: AppOptions) {
       res.json({ result: result ?? null });
     } catch (e) {
       if (e instanceof repo.NotFoundError) return res.status(404).json({ error: e.message });
+      if (e instanceof repo.ValidationError) return res.status(400).json({ error: e.message });
       next(e);
     }
   });

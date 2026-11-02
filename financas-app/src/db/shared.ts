@@ -54,6 +54,56 @@ export interface Rule {
   direction: 'in' | 'out' | null;
 }
 
+export type ClassificationAction = 'manual' | 'similar' | 'rule' | 'reset';
+
+/** Uma alteração de categoria (de um ou vários lançamentos), que pode ser desfeita. */
+export interface ClassificationLogEntry {
+  id: number;
+  created_at: string;
+  action: ClassificationAction;
+  category_key: string | null;
+  label: string;
+  rule_pattern: string | null;
+  tx_count: number;
+  undone: number;
+}
+
+export interface ClassifyResult {
+  /** Registro no histórico (para desfazer); `null` se nada mudou. */
+  logId: number | null;
+  /** Total de lançamentos alterados, incluindo o próprio. */
+  changed: number;
+  /** Quantos mudaram por terem a mesma descrição. */
+  similar: number;
+  /** Quantos já importados mudaram pela regra nova. */
+  byRule: number;
+}
+
+export interface SimilarPreview {
+  /** Outros lançamentos com a mesma descrição (mesmo sentido: entrada/saída). */
+  count: number;
+  /** A descrição só tem palavras genéricas ("PIX ENVIADO") — nada é aplicado aos semelhantes. */
+  generic: boolean;
+}
+
+export interface RulePreview {
+  /** Lançamentos já importados que o padrão alcança. */
+  count: number;
+  generic: boolean;
+  examples: string[];
+}
+
+export const RULE_TOO_GENERIC =
+  'Esse texto é genérico demais (ex.: “PIX ENVIADO”, “COMPRA CARTAO”) e valeria para quase todos os lançamentos. ' +
+  'Use o nome de quem recebeu ou da loja, como “NUCLEO CAMALEAO”.';
+
+export const ACTION_LABEL: Record<ClassificationAction, string> = {
+  manual: 'Categoria alterada',
+  similar: 'Categoria aplicada aos semelhantes',
+  rule: 'Regra criada',
+  reset: 'Classificação automática refeita',
+};
+
 export const ACCOUNT_TYPES: { value: AccountType; label: string }[] = [
   { value: 'checking', label: 'Conta corrente' },
   { value: 'savings', label: 'Poupança' },

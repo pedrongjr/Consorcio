@@ -1,11 +1,7 @@
-# Blueprint do Render: cria o banco Postgres e o serviço web do Minhas Finanças.
-# No painel do Render: New → Blueprint → escolha este repositório.
-databases:
-  - name: minhas-financas-db
-    databaseName: financas
-    user: financas
-    plan: free
-
+# Blueprint do Render: cria o serviço web do Minhas Finanças.
+# O banco de dados fica no Neon (Postgres gratuito, sem prazo de expiração).
+# No painel do Render: New → Blueprint → escolha este repositório e, quando
+# pedir, cole em DATABASE_URL a "connection string" do Neon (sem pooling).
 services:
   - type: web
     name: minhas-financas
@@ -16,9 +12,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: minhas-financas-db
-          property: connectionString
+        sync: false
       - key: NODE_ENV
         value: production
       - key: TRUST_PROXY

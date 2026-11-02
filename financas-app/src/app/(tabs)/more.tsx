@@ -48,6 +48,7 @@ export default function More() {
         <Item icon="pricetags" title="Categorias" subtitle="Crie, edite e organize subcategorias" onPress={go('/categories')} />
         <Item icon="git-branch" title="Regras de classificação" subtitle="Palavras-chave que definem a categoria" onPress={go('/rules')} />
         <Item icon="time" title="Histórico de importações" subtitle="Veja ou desfaça importações" onPress={go('/imports')} />
+        <Item icon="arrow-undo" title="Histórico de classificações" subtitle="Veja ou desfaça mudanças de categoria e regras" onPress={go('/classifications')} />
       </Card>
       <Card>
         <Item icon="refresh" title="Reclassificar lançamentos" subtitle="Aplica as regras atuais aos lançamentos não ajustados à mão" onPress={doReclassify} />

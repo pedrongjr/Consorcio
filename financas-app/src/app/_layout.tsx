@@ -27,6 +27,7 @@ export default function RootLayout() {
           <Stack.Screen name="categories" options={{ title: 'Categorias' }} />
           <Stack.Screen name="rules" options={{ title: 'Regras de classificação' }} />
           <Stack.Screen name="imports" options={{ title: 'Histórico de importações' }} />
+          <Stack.Screen name="classifications" options={{ title: 'Histórico de classificações' }} />
         </Stack>
         </AuthGate>
       </DbProvider>

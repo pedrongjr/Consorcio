@@ -25,15 +25,17 @@ Além dos apps para celular, há uma versão web com **cadastro e login**. Cada 
 
 Os testes em `server/__tests__/api.test.ts` sobem a API contra um Postgres real e cobrem cadastro, login, limite de tentativas, bloqueio, CSRF e cookies. Eles também tentam **acessar, alterar e apagar os dados de um usuário a partir de outro por todas as rotas** e confirmam que o RLS barra o acesso mesmo com SQL sem filtro. Tudo roda em dois cenários: conexão como superusuário e como dono comum das tabelas (o caso dos Postgres hospedados).
 
-### Publicar (Render, com Postgres incluso)
+### Publicar (Render + banco no Neon)
 
-O repositório tem um blueprint (`render.yaml`, na raiz) que cria o banco e o serviço:
+O site roda no Render e o banco Postgres fica no [Neon](https://neon.tech) (plano gratuito, sem prazo de expiração).
 
-1. Crie uma conta em [render.com](https://render.com) e conecte o GitHub.
-2. **New → Blueprint** → escolha este repositório → **Apply**.
-3. Em alguns minutos o site fica no ar em `https://minhas-financas-XXXX.onrender.com`.
+1. No Neon, crie um projeto (região mais próxima, ex.: São Paulo) e copie a *connection string* com **Connection pooling desligado** (começa com `postgresql://` e termina com `?sslmode=require`).
+2. No Render: **New → Blueprint** → escolha este repositório. Quando pedir `DATABASE_URL`, cole a string do Neon.
+   Se o serviço já existe: abra o serviço → **Environment** → edite `DATABASE_URL` → **Save, rebuild and deploy**.
+3. As tabelas e o isolamento por usuário (Row-Level Security) são criados sozinhos na primeira inicialização.
 
-> No plano gratuito do Render, o serviço "dorme" sem uso (o primeiro acesso demora ~1 min) e o banco gratuito expira após 30 dias. Para uso contínuo, use um plano pago ou um Postgres externo (ex.: [Neon](https://neon.tech), gratuito): basta trocar a variável `DATABASE_URL`.
+> Use a conexão **sem** pooling: o servidor usa travas de sessão na migração. No plano gratuito do Render o serviço "dorme" sem uso (o primeiro acesso demora ~1 min).
+
 
 **Outras hospedagens**: a cada push, o GitHub Actions publica a imagem `ghcr.io/pedrongjr/minhas-financas-web:latest`. Qualquer serviço que rode Docker (Fly.io, Railway, Google Cloud Run, uma VPS) serve. Defina `DATABASE_URL` (Postgres 15+) e `NODE_ENV=production`, e exponha a porta 3000 atrás de HTTPS.
 

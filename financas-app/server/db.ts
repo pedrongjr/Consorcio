@@ -11,7 +11,7 @@ export type Tx = pg.PoolClient;
 export const RLS_ROLE = 'financas_rls';
 
 /** Tabelas com dados de usuário. Todas têm `user_id` e Row-Level Security forçado. */
-const USER_TABLES = ['accounts', 'categories', 'imports', 'transactions', 'rules', 'budgets'] as const;
+const USER_TABLES = ['accounts', 'categories', 'imports', 'transactions', 'rules', 'budgets', 'class_log', 'class_log_items'] as const;
 
 export function createPool(connectionString: string): Db {
   const ssl = /sslmode=(require|verify)/.test(connectionString) || process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined;
@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 CREATE INDEX IF NOT EXISTS tx_user_date ON transactions (user_id, date);
 CREATE INDEX IF NOT EXISTS tx_user_desc_key ON transactions (user_id, description_key);
+CREATE UNIQUE INDEX IF NOT EXISTS tx_id_user ON transactions (id, user_id);
 
 CREATE TABLE IF NOT EXISTS rules (
   id SERIAL PRIMARY KEY,
@@ -122,6 +123,38 @@ CREATE TABLE IF NOT EXISTS budgets (
   limit_cents BIGINT NOT NULL,
   PRIMARY KEY (user_id, category_key),
   FOREIGN KEY (user_id, category_key) REFERENCES categories(user_id, key) ON DELETE CASCADE
+);
+
+-- Histórico de classificações: cada alteração de categoria (manual, por
+-- semelhança, por regra) guarda o valor anterior de cada lançamento para poder
+-- ser desfeita.
+CREATE TABLE IF NOT EXISTS class_log (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  category_key TEXT,
+  label TEXT NOT NULL,
+  rule_id INTEGER,
+  rule_pattern TEXT,
+  rule_direction TEXT,
+  rule_prev_category TEXT,
+  tx_count INTEGER NOT NULL DEFAULT 0,
+  undone INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (id, user_id)
+);
+CREATE INDEX IF NOT EXISTS class_log_user ON class_log (user_id, id);
+
+CREATE TABLE IF NOT EXISTS class_log_items (
+  log_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  transaction_id INTEGER NOT NULL,
+  old_category_key TEXT,
+  old_source TEXT NOT NULL,
+  new_category_key TEXT,
+  PRIMARY KEY (log_id, transaction_id),
+  FOREIGN KEY (log_id, user_id) REFERENCES class_log(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (transaction_id, user_id) REFERENCES transactions(id, user_id) ON DELETE CASCADE
 );
 `;
 

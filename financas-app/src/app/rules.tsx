@@ -2,7 +2,8 @@ import { useDb } from '../db/DbProvider';
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { showAlert } from '../lib/dialog';
-import { deleteRule, listCategories, listRules, reclassifyAll, saveRule } from '../db/repo';
+import { createRule, deleteRule, listCategories, listRules, RULE_TOO_GENERIC } from '../db/repo';
+import { isGenericText } from '../core/classifier';
 import { useAsyncData } from '../lib/useAsyncData';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { Button, Card, CategoryBadge, Chip, colors, EmptyState, Field, Icon, SectionTitle, styles } from '../components/ui';
@@ -18,11 +19,30 @@ export default function Rules() {
 
   async function add() {
     if (!pattern.trim() || !categoryKey) return showAlert('Preencha o texto e a categoria');
-    await saveRule(db, pattern, categoryKey, direction);
-    setPattern(''); setCategoryKey(null);
-    const n = await reclassifyAll(db);
-    reload();
-    if (n) showAlert('Regra criada', `${n} lançamento(s) foram reclassificados.`);
+    if (isGenericText(pattern)) return showAlert('Regra genérica demais', RULE_TOO_GENERIC);
+    try {
+      const r = await createRule(db, pattern, categoryKey, direction);
+      setPattern(''); setCategoryKey(null);
+      reload();
+      showAlert('Regra criada', r.byRule
+        ? `${r.byRule} lançamento(s) foram reclassificados. Para desfazer, use Mais › Histórico de classificações.`
+        : 'Ela será usada nas próximas importações.');
+    } catch (e) {
+      showAlert('Não foi possível criar a regra', (e as Error).message);
+    }
+  }
+
+  function remove(id: number, p: string) {
+    showAlert(
+      `Excluir a regra “${p}”?`,
+      'Os próximos extratos não usarão mais essa regra. Lançamentos já classificados por ela continuam como estão: ' +
+        'para voltar atrás, use Mais › Histórico de classificações ou, na lista de lançamentos, filtre pela categoria e toque em ' +
+        '“Refazer classificação automática”.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Excluir', style: 'destructive', onPress: async () => { await deleteRule(db, id); reload(); } },
+      ],
+    );
   }
 
   const cat = categoryKey ? catMap.get(categoryKey) : undefined;
@@ -32,6 +52,7 @@ export default function Rules() {
       <Card>
         <SectionTitle>Nova regra</SectionTitle>
         <Field label="Quando a descrição contiver" value={pattern} onChangeText={setPattern} autoCapitalize="characters" placeholder="Ex.: PADARIA BELA VISTA" />
+        {pattern.trim() && isGenericText(pattern) ? <Text style={{ color: colors.expense, marginBottom: 8 }}>{RULE_TOO_GENERIC}</Text> : null}
         <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
           <Chip label="Saídas" active={direction === 'out'} onPress={() => setDirection('out')} />
           <Chip label="Entradas" active={direction === 'in'} onPress={() => setDirection('in')} />
@@ -61,7 +82,7 @@ export default function Rules() {
                     <Text style={styles.muted}>{r.direction === 'in' ? 'entradas' : r.direction === 'out' ? 'saídas' : 'entradas e saídas'}</Text>
                   </View>
                 </View>
-                <Pressable hitSlop={10} accessibilityLabel="Excluir regra" onPress={async () => { await deleteRule(db, r.id); reload(); }}>
+                <Pressable hitSlop={10} accessibilityLabel="Excluir regra" onPress={() => remove(r.id, r.pattern)}>
                   <Icon name="trash-outline" color={colors.expense} />
                 </Pressable>
               </View>

@@ -1,10 +1,13 @@
 import type { CategoryRule, ParsedStatement , CategoryKind } from '../src/core/types';
-import { Classifier, type HistoryEntry } from '../src/core/classifier';
+import { Classifier, displayDescription, isGenericText, similarityKey, type HistoryEntry } from '../src/core/classifier';
 import { DEFAULT_RULES } from '../src/core/categories';
 import { dedupeKeys } from '../src/core/importer';
 import { descriptionKey, normalizeText } from '../src/core/text';
-import type {
-  Account, AccountType, AccountWithBalance, Category, ImportCandidate, ImportRecord, Rule, Transaction, TxFilter,
+import {
+  RULE_TOO_GENERIC,
+  type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
+  type ClassifyResult, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
+  type TxFilter,
 } from '../src/db/shared';
 import type { Tx } from './db';
 
@@ -18,6 +21,9 @@ import type { Tx } from './db';
 export class NotFoundError extends Error {
   constructor(what: string) { super(`${what} não encontrado(a).`); }
 }
+
+/** Pedido válido no formato, mas recusado (a mensagem é mostrada ao usuário). */
+export class ValidationError extends Error {}
 
 async function ensureAccount(tx: Tx, uid: number, accountId: number): Promise<void> {
   const r = await tx.query('SELECT 1 FROM accounts WHERE id = $1 AND user_id = $2', [accountId, uid]);
@@ -134,6 +140,7 @@ export async function listRules(tx: Tx, uid: number): Promise<Rule[]> {
 export async function saveRule(tx: Tx, uid: number, pattern: string, categoryKey: string, direction: 'in' | 'out' | null): Promise<void> {
   const p = normalizeText(pattern);
   if (!p) return;
+  if (isGenericText(p)) throw new ValidationError(RULE_TOO_GENERIC);
   if (!(await validCategory(tx, uid, categoryKey))) throw new NotFoundError('Categoria');
   await tx.query(
     `INSERT INTO rules (user_id, pattern, category_key, direction) VALUES ($1, $2, $3, $4)
@@ -151,14 +158,14 @@ async function buildClassifier(tx: Tx, uid: number): Promise<Classifier> {
   const userRules: CategoryRule[] = (await listRules(tx, uid)).map((r) => ({
     pattern: r.pattern, categoryKey: r.category_key, direction: r.direction ?? undefined, source: 'user',
   }));
-  const history = (await tx.query<HistoryEntry>(
-    `SELECT description_key AS "descriptionKey", category_key AS "categoryKey",
-            CASE WHEN amount_cents >= 0 THEN 'in' ELSE 'out' END AS direction
-     FROM transactions
-     WHERE user_id = $1 AND category_source = 'user' AND category_key IS NOT NULL AND description_key <> ''
+  const history: HistoryEntry[] = (await tx.query<{ description: string; memo: string | null; category_key: string; amount_cents: number }>(
+    `SELECT description, memo, category_key, amount_cents FROM transactions
+     WHERE user_id = $1 AND category_source = 'user' AND category_key IS NOT NULL
      ORDER BY id`,
     [uid],
-  )).rows;
+  )).rows.map((r) => ({
+    key: similarityKey(r.description, r.memo), categoryKey: r.category_key, direction: r.amount_cents >= 0 ? 'in' : 'out',
+  }));
   return new Classifier([...userRules, ...DEFAULT_RULES.filter((r) => validKeys.has(r.categoryKey))], history);
 }
 
@@ -237,19 +244,225 @@ export async function updateTransaction(
   if (!r.rowCount) throw new NotFoundError('Lançamento');
 }
 
-export async function applyCategoryToSimilar(tx: Tx, uid: number, txId: number, categoryKey: string): Promise<number> {
-  const key = await validCategory(tx, uid, categoryKey);
-  if (!key) throw new NotFoundError('Categoria');
-  const t = (await tx.query<{ description_key: string; amount_cents: number }>(
-    'SELECT description_key, amount_cents FROM transactions WHERE id = $1 AND user_id = $2', [txId, uid],
-  )).rows[0];
-  if (!t?.description_key) return 0;
-  const r = await tx.query(
-    `UPDATE transactions SET category_key = $1, category_source = 'user'
-     WHERE user_id = $2 AND description_key = $3 AND id <> $4 AND (amount_cents >= 0) = ($5::bigint >= 0)`,
-    [key, uid, t.description_key, txId, t.amount_cents],
+// ---------------- Classificação (com histórico para desfazer) ----------------
+
+type TxRow = { id: number; description: string; memo: string | null; amount_cents: number; category_key: string | null; category_source: string };
+
+async function txRow(tx: Tx, uid: number, id: number): Promise<TxRow> {
+  const r = await tx.query<TxRow>(
+    'SELECT id, description, memo, amount_cents, category_key, category_source FROM transactions WHERE id = $1 AND user_id = $2',
+    [id, uid],
   );
-  return r.rowCount ?? 0;
+  if (!r.rowCount) throw new NotFoundError('Lançamento');
+  return r.rows[0];
+}
+
+/** Lançamentos com a mesma descrição (e mesmo sentido) — vazio se a descrição for genérica. */
+async function similarRows(tx: Tx, uid: number, t: TxRow): Promise<TxRow[]> {
+  const key = similarityKey(t.description, t.memo);
+  if (!key) return [];
+  const r = await tx.query<TxRow>(
+    `SELECT id, description, memo, amount_cents, category_key, category_source FROM transactions
+     WHERE user_id = $1 AND description_key = $2 AND id <> $3 AND (amount_cents >= 0) = ($4::bigint >= 0)`,
+    [uid, descriptionKey(t.description), t.id, t.amount_cents],
+  );
+  return r.rows.filter((x) => similarityKey(x.description, x.memo) === key);
+}
+
+/** Lançamentos ainda não categorizados à mão que o padrão alcança. */
+async function ruleRows(tx: Tx, uid: number, pattern: string, direction: 'in' | 'out' | null, onlyAuto: boolean): Promise<TxRow[]> {
+  const c = new Classifier([{ pattern, categoryKey: '_', direction: direction ?? undefined, source: 'user' }]);
+  const r = await tx.query<TxRow>(
+    `SELECT id, description, memo, amount_cents, category_key, category_source FROM transactions
+     WHERE user_id = $1 ${onlyAuto ? "AND category_source <> 'user'" : ''} ORDER BY date DESC, id DESC`,
+    [uid],
+  );
+  return r.rows.filter((x) => c.classify({ description: x.description, memo: x.memo ?? undefined, amountCents: x.amount_cents }).rule);
+}
+
+export async function previewSimilar(tx: Tx, uid: number, txId: number): Promise<SimilarPreview> {
+  const t = await txRow(tx, uid, txId);
+  if (!similarityKey(t.description, t.memo)) return { count: 0, generic: true };
+  return { count: (await similarRows(tx, uid, t)).length, generic: false };
+}
+
+export async function previewRule(tx: Tx, uid: number, pattern: string, direction: 'in' | 'out' | null): Promise<RulePreview> {
+  const p = normalizeText(pattern);
+  if (!p) return { count: 0, generic: false, examples: [] };
+  if (isGenericText(p)) return { count: 0, generic: true, examples: [] };
+  const rows = await ruleRows(tx, uid, p, direction, false);
+  return { count: rows.length, generic: false, examples: [...new Set(rows.map((r) => displayDescription(r.description, r.memo)))].slice(0, 3) };
+}
+
+class LogWriter {
+  private items: { id: number; oldCat: string | null; oldSource: string; newCat: string | null }[] = [];
+  private seen = new Set<number>();
+  constructor(private tx: Tx, private uid: number) {}
+
+  async set(row: TxRow, categoryKey: string | null, source: string): Promise<boolean> {
+    if (this.seen.has(row.id)) return false;
+    if (row.category_key === categoryKey && row.category_source === source) return false;
+    this.seen.add(row.id);
+    await this.tx.query('UPDATE transactions SET category_key = $1, category_source = $2 WHERE id = $3 AND user_id = $4',
+      [categoryKey, source, row.id, this.uid]);
+    this.items.push({ id: row.id, oldCat: row.category_key, oldSource: row.category_source, newCat: categoryKey });
+    return true;
+  }
+
+  get count() { return this.items.length; }
+
+  async save(entry: {
+    action: ClassificationAction; categoryKey: string | null; label: string;
+    rule?: { id: number; pattern: string; direction: 'in' | 'out' | null; prevCategory: string | null };
+  }): Promise<number | null> {
+    if (!this.items.length && !entry.rule) return null;
+    const id = (await this.tx.query<{ id: number }>(
+      `INSERT INTO class_log (user_id, action, category_key, label, rule_id, rule_pattern, rule_direction, rule_prev_category, tx_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [this.uid, entry.action, entry.categoryKey, entry.label.slice(0, 300), entry.rule?.id ?? null, entry.rule?.pattern ?? null,
+        entry.rule?.direction ?? null, entry.rule?.prevCategory ?? null, this.items.length],
+    )).rows[0].id;
+    for (const it of this.items) {
+      await this.tx.query(
+        `INSERT INTO class_log_items (log_id, user_id, transaction_id, old_category_key, old_source, new_category_key)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [id, this.uid, it.id, it.oldCat, it.oldSource, it.newCat],
+      );
+    }
+    // Mantém só os 200 registros mais recentes.
+    await this.tx.query(
+      'DELETE FROM class_log WHERE user_id = $1 AND id NOT IN (SELECT id FROM class_log WHERE user_id = $1 ORDER BY id DESC LIMIT 200)',
+      [this.uid],
+    );
+    return id;
+  }
+}
+
+/** Cria/atualiza a regra e a aplica aos lançamentos não categorizados à mão. */
+async function applyNewRule(
+  tx: Tx, uid: number, log: LogWriter, pattern: string, categoryKey: string, direction: 'in' | 'out' | null,
+): Promise<{ id: number; pattern: string; direction: 'in' | 'out' | null; prevCategory: string | null; applied: number }> {
+  const p = normalizeText(pattern);
+  if (!p || isGenericText(p)) throw new ValidationError(RULE_TOO_GENERIC);
+  const prev = await tx.query<{ category_key: string }>(
+    'SELECT category_key FROM rules WHERE user_id = $1 AND pattern = $2 AND direction IS NOT DISTINCT FROM $3', [uid, p, direction],
+  );
+  await saveRule(tx, uid, p, categoryKey, direction);
+  const id = (await tx.query<{ id: number }>(
+    'SELECT id FROM rules WHERE user_id = $1 AND pattern = $2 AND direction IS NOT DISTINCT FROM $3', [uid, p, direction],
+  )).rows[0].id;
+  let applied = 0;
+  for (const r of await ruleRows(tx, uid, p, direction, true)) if (await log.set(r, categoryKey, 'user')) applied++;
+  return { id, pattern: p, direction, prevCategory: prev.rows[0]?.category_key ?? null, applied };
+}
+
+/**
+ * Muda a categoria de um lançamento e, opcionalmente, dos semelhantes e/ou
+ * cria uma regra. Tudo fica registrado no histórico para poder ser desfeito.
+ */
+export async function classifyTransaction(
+  tx: Tx, uid: number,
+  args: { txId: number; categoryKey: string; applySimilar: boolean; rule?: { pattern: string; direction: 'in' | 'out' | null } | null },
+): Promise<ClassifyResult> {
+  const key = await validCategory(tx, uid, args.categoryKey);
+  if (!key) throw new NotFoundError('Categoria');
+  if (args.rule && isGenericText(args.rule.pattern)) throw new ValidationError(RULE_TOO_GENERIC);
+  const t = await txRow(tx, uid, args.txId);
+  const log = new LogWriter(tx, uid);
+  await log.set(t, key, 'user');
+  let similar = 0;
+  if (args.applySimilar) for (const r of await similarRows(tx, uid, t)) if (await log.set(r, key, 'user')) similar++;
+  const rule = args.rule ? await applyNewRule(tx, uid, log, args.rule.pattern, key, args.rule.direction) : undefined;
+  const logId = await log.save({
+    action: rule ? 'rule' : similar ? 'similar' : 'manual', categoryKey: key, label: displayDescription(t.description, t.memo), rule,
+  });
+  return { logId, changed: log.count, similar, byRule: rule?.applied ?? 0 };
+}
+
+/** Cria uma regra (tela de regras) e a aplica aos lançamentos não categorizados à mão. */
+export async function createRule(
+  tx: Tx, uid: number, pattern: string, categoryKey: string, direction: 'in' | 'out' | null,
+): Promise<ClassifyResult> {
+  if (!(await validCategory(tx, uid, categoryKey))) throw new NotFoundError('Categoria');
+  const log = new LogWriter(tx, uid);
+  const rule = await applyNewRule(tx, uid, log, pattern, categoryKey, direction);
+  const logId = await log.save({ action: 'rule', categoryKey, label: `Regra “${rule.pattern}”`, rule });
+  return { logId, changed: log.count, similar: 0, byRule: rule.applied };
+}
+
+/**
+ * Descarta a categoria escolhida à mão destes lançamentos e os classifica de
+ * novo automaticamente (regras + aprendizado). Útil para corrigir uma
+ * alteração em massa feita por engano.
+ */
+export async function resetClassification(tx: Tx, uid: number, ids: number[]): Promise<ClassifyResult> {
+  const unique = [...new Set(ids)];
+  const rows = (await tx.query<TxRow>(
+    `SELECT id, description, memo, amount_cents, category_key, category_source FROM transactions
+     WHERE user_id = $1 AND id = ANY($2::int[])`,
+    [uid, unique],
+  )).rows;
+  // O classificador não deve aprender com os próprios lançamentos que estão sendo refeitos.
+  await tx.query("UPDATE transactions SET category_source = 'none' WHERE user_id = $1 AND id = ANY($2::int[]) AND category_source = 'user'", [uid, unique]);
+  const classifier = await buildClassifier(tx, uid);
+  const log = new LogWriter(tx, uid);
+  for (const r of rows) {
+    const c = classifier.classify({ description: r.description, memo: r.memo ?? undefined, amountCents: r.amount_cents });
+    // `r` ainda tem os valores originais: o histórico guarda a origem verdadeira.
+    if (!(await log.set(r, c.categoryKey, c.confidence))) {
+      await tx.query('UPDATE transactions SET category_source = $1 WHERE id = $2 AND user_id = $3', [r.category_source, r.id, uid]);
+    }
+  }
+  const logId = await log.save({ action: 'reset', categoryKey: null, label: `${rows.length} lançamento(s) reclassificados automaticamente` });
+  return { logId, changed: log.count, similar: 0, byRule: 0 };
+}
+
+export async function listClassificationLog(tx: Tx, uid: number): Promise<ClassificationLogEntry[]> {
+  const r = await tx.query<ClassificationLogEntry>(
+    `SELECT id, action, category_key, label, rule_pattern, tx_count, undone,
+            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+     FROM class_log WHERE user_id = $1 ORDER BY id DESC LIMIT 200`,
+    [uid],
+  );
+  return r.rows;
+}
+
+/**
+ * Desfaz um registro do histórico: devolve a categoria anterior aos
+ * lançamentos que ainda estão como ele deixou (alterações posteriores são
+ * preservadas) e desfaz a regra criada. Retorna quantos lançamentos voltaram.
+ */
+export async function undoClassification(tx: Tx, uid: number, logId: number): Promise<number> {
+  const log = (await tx.query<{ undone: number; category_key: string | null; rule_id: number | null; rule_pattern: string | null; rule_direction: 'in' | 'out' | null; rule_prev_category: string | null }>(
+    'SELECT undone, category_key, rule_id, rule_pattern, rule_direction, rule_prev_category FROM class_log WHERE id = $1 AND user_id = $2 FOR UPDATE',
+    [logId, uid],
+  )).rows[0];
+  if (!log) throw new NotFoundError('Registro');
+  if (log.undone) return 0;
+  const items = (await tx.query<{ transaction_id: number; old_category_key: string | null; old_source: string; new_category_key: string | null }>(
+    'SELECT transaction_id, old_category_key, old_source, new_category_key FROM class_log_items WHERE log_id = $1 AND user_id = $2',
+    [logId, uid],
+  )).rows;
+  let restored = 0;
+  for (const it of items) {
+    const r = await tx.query(
+      `UPDATE transactions SET category_key = $1, category_source = $2
+       WHERE id = $3 AND user_id = $4 AND category_key IS NOT DISTINCT FROM $5`,
+      [await validCategory(tx, uid, it.old_category_key), it.old_source, it.transaction_id, uid, it.new_category_key],
+    );
+    restored += r.rowCount ?? 0;
+  }
+  if (log.rule_id && log.rule_pattern) {
+    if (log.rule_prev_category && (await validCategory(tx, uid, log.rule_prev_category))) {
+      await tx.query('UPDATE rules SET category_key = $1 WHERE id = $2 AND user_id = $3 AND category_key = $4',
+        [log.rule_prev_category, log.rule_id, uid, log.category_key]);
+    } else {
+      await tx.query('DELETE FROM rules WHERE id = $1 AND user_id = $2 AND pattern = $3 AND category_key IS NOT DISTINCT FROM $4',
+        [log.rule_id, uid, log.rule_pattern, log.category_key]);
+    }
+  }
+  await tx.query('UPDATE class_log SET undone = 1 WHERE id = $1 AND user_id = $2', [logId, uid]);
+  return restored;
 }
 
 export async function addManualTransaction(

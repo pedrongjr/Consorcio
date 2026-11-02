@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { FlatList, Pressable, Text, View } from 'react-native';
 import { showAlert } from '../lib/dialog';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { descriptionKey } from '../core/text';
+import { displayDescription, similarityKey } from '../core/classifier';
 import { formatDateBR } from '../core/reports';
 import { commitImport, listCategories, type Category, type ImportCandidate } from '../db/repo';
 import { importSession } from '../lib/importSession';
@@ -39,13 +39,14 @@ export default function ImportReview() {
 
   function setCategory(index: number, key: string) {
     const target = items[index];
-    const k = descriptionKey(target.description);
+    // Descrição genérica ("PIX ENVIADO" sem nome) → só este lançamento muda.
+    const k = similarityKey(target.description, target.memo);
     const positive = target.amountCents >= 0;
     let others = 0;
     const next = items.map((it, i) => {
       if (i === index) return { ...it, categoryKey: key, categorySource: 'user' };
       // Aplica também aos lançamentos com a mesma descrição que não foram ajustados à mão.
-      if (it.categorySource !== 'user' && (it.amountCents >= 0) === positive && descriptionKey(it.description) === k) {
+      if (it.categorySource !== 'user' && (it.amountCents >= 0) === positive && k && similarityKey(it.description, it.memo) === k) {
         others++;
         return { ...it, categoryKey: key, categorySource: 'user' };
       }
@@ -108,7 +109,7 @@ export default function ImportReview() {
                 <Icon name={item.selected ? 'checkbox' : 'square-outline'} size={24} color={item.selected ? colors.primary : colors.muted} />
               </Pressable>
               <View style={{ flex: 1, gap: 4 }}>
-                <Text style={{ color: colors.text }} numberOfLines={2}>{item.description}</Text>
+                <Text style={{ color: colors.text }} numberOfLines={2}>{displayDescription(item.description, item.memo)}</Text>
                 <Pressable onPress={() => setEditing(index)} style={[styles.row, { gap: 6 }]}>
                   {c ? <CategoryBadge name={c.name} icon={c.icon} color={item.categorySource === 'none' ? colors.warning : c.color} /> : null}
                   {item.duplicate ? <Text style={[styles.muted, { fontSize: 12 }]}>já importado</Text> : null}

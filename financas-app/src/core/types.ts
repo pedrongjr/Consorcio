@@ -1,5 +1,5 @@
 /** Formatos de extrato suportados. */
-export type StatementFormat = 'ofx' | 'csv' | 'qif' | 'xlsx' | 'ods' | 'pdf';
+export type StatementFormat = 'ofx' | 'csv' | 'qif' | 'xlsx' | 'ods' | 'pdf' | 'image';
 
 /** Lançamento extraído de um arquivo de extrato, antes de ser salvo. */
 export interface ParsedTransaction {

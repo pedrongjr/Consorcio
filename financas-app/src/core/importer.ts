@@ -8,12 +8,24 @@ import { parsePdfText } from './parsers/pdfText';
 
 export class UnsupportedFormatError extends Error {}
 
+/** Tipo MIME da imagem (JPG, PNG ou WEBP) pelo conteúdo do arquivo, ou `null`. */
+export function imageMimeType(fileName: string, bytes: Uint8Array): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  const riff = String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+  return riff ? 'image/webp' : null;
+}
+
 /** Descobre o formato pela extensão e, em caso de dúvida, pelo conteúdo. */
 export function detectFormat(fileName: string, bytes: Uint8Array): StatementFormat {
   const ext = fileName.toLowerCase().split('.').pop() ?? '';
   const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
   const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
   if (isPdf || ext === 'pdf') return 'pdf';
+  if (imageMimeType(fileName, bytes)) return 'image';
+  if (['heic', 'heif'].includes(ext)) {
+    throw new UnsupportedFormatError('Fotos HEIC não são suportadas. Tire um print da tela ou salve a foto como JPG.');
+  }
   if (isZip) {
     if (ext === 'ods') return 'ods';
     if (ext === 'xlsx' || ext === 'xlsm') return 'xlsx';
@@ -31,7 +43,7 @@ export function detectFormat(fileName: string, bytes: Uint8Array): StatementForm
   if (ext === 'qif' || looksLikeQif(text)) return 'qif';
   // Texto delimitado — inclui tabelas HTML salvas como ".xls" por alguns bancos.
   if (['csv', 'txt', 'tsv', 'xls'].includes(ext) || /[;,\t]/.test(text) || /<table/i.test(text)) return 'csv';
-  throw new UnsupportedFormatError('Formato de arquivo não reconhecido. Use OFX, CSV, QIF, XLSX, ODS ou PDF.');
+  throw new UnsupportedFormatError('Formato de arquivo não reconhecido. Use OFX, CSV, QIF, XLSX, ODS, PDF ou imagem (JPG/PNG).');
 }
 
 /** Converte tabela HTML (exportações "xls" de alguns bancos) para CSV com `;`. */
@@ -48,8 +60,10 @@ function htmlTableToCsv(html: string): string {
 export interface ParseFileInput {
   fileName: string;
   bytes: Uint8Array;
-  /** Para PDFs: linhas de texto já extraídas pelo pdf.js. */
+  /** Para PDFs e imagens: linhas de texto já extraídas (pdf.js ou OCR). */
   pdfLines?: string[];
+  /** As linhas vieram de OCR. */
+  ocr?: boolean;
   creditCard?: boolean;
 }
 
@@ -58,8 +72,9 @@ export function parseStatementFile(input: ParseFileInput): ParsedStatement {
   let result: ParsedStatement;
   switch (format) {
     case 'pdf':
-      if (!input.pdfLines) throw new Error('O texto do PDF precisa ser extraído antes.');
-      return parsePdfText(input.pdfLines, { creditCard: input.creditCard });
+    case 'image':
+      if (!input.pdfLines) throw new Error('O texto do PDF/imagem precisa ser extraído antes.');
+      return parsePdfText(input.pdfLines, { creditCard: input.creditCard, ocr: input.ocr || format === 'image', format });
     case 'ofx':
       return parseOfx(decodeText(input.bytes));
     case 'qif':

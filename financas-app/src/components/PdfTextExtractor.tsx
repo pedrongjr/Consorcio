@@ -1,12 +1,14 @@
 import { useImperativeHandle, useRef, type ComponentType, type Ref } from 'react';
 import { View } from 'react-native';
 import { WebView as RNWebView } from 'react-native-webview';
-import { groupTextItems, type PdfTextItem } from '../core/pdfLayout';
+import { cleanOcrLines, groupTextItems, type PdfTextItem } from '../core/pdfLayout';
+import { buildReaderHtml } from '../core/pdfReaderHtml';
 
 /**
- * Extrai o texto de PDFs usando o pdf.js dentro de um WebView invisível.
- * O arquivo é processado no próprio aparelho; a internet só é usada para
- * baixar a biblioteca pdf.js (cdnjs) na primeira vez.
+ * Lê PDFs (pdf.js) e faz OCR de PDFs escaneados e de fotos de extrato
+ * (Tesseract.js) dentro de um WebView invisível. O arquivo é processado no
+ * próprio aparelho; a internet só é usada para baixar as bibliotecas e o
+ * modelo de português na primeira vez. Ver `core/pdfReaderHtml.ts`.
  */
 
 // Os tipos publicados do react-native-webview 14 viram `never` com os tipos do
@@ -28,43 +30,34 @@ export class PdfPasswordError extends Error {
   }
 }
 
-export interface PdfTextExtractorHandle {
-  extract(base64: string, password?: string): Promise<string[]>;
+export interface ExtractProgress {
+  stage: 'text' | 'ocr-init' | 'ocr';
+  page?: number;
+  total?: number;
+  /** 0..1 dentro da página atual. */
+  progress?: number;
 }
 
-const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
+export interface ExtractResult {
+  lines: string[];
+  /** O texto veio de OCR (PDF escaneado ou imagem). */
+  ocr: boolean;
+  /** O PDF tinha mais páginas do que o limite de OCR. */
+  truncated: boolean;
+}
 
-const HTML = `<!doctype html><html><head><meta charset="utf-8">
-<script src="${PDFJS}/pdf.min.js"></script></head><body><script>
-  function post(m) { window.ReactNativeWebView.postMessage(JSON.stringify(m)); }
-  if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = '${PDFJS}/pdf.worker.min.js';
-    post({ type: 'ready' });
-  } else {
-    post({ type: 'error', message: 'Não foi possível carregar o leitor de PDF. Verifique a conexão com a internet.' });
-  }
-  window.extractPdf = async function (id, b64, password) {
-    try {
-      var raw = atob(b64); var bytes = new Uint8Array(raw.length);
-      for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-      var doc = await pdfjsLib.getDocument({ data: bytes, password: password || undefined }).promise;
-      var pages = [];
-      for (var p = 1; p <= doc.numPages; p++) {
-        var page = await doc.getPage(p);
-        var content = await page.getTextContent();
-        pages.push(content.items.map(function (it) {
-          return { str: it.str, x: it.transform[4], y: it.transform[5], width: it.width, height: it.height || Math.abs(it.transform[3]) };
-        }));
-      }
-      post({ type: 'result', id: id, pages: pages });
-    } catch (e) {
-      if (e && e.name === 'PasswordException') post({ type: 'password', id: id, wrong: e.code === 2 });
-      else post({ type: 'error', id: id, message: String((e && e.message) || e) });
-    }
-  };
-</script></body></html>`;
+export interface PdfTextExtractorHandle {
+  extractPdf(base64: string, opts?: { password?: string; onProgress?: (p: ExtractProgress) => void }): Promise<ExtractResult>;
+  extractImage(base64: string, mimeType: string, onProgress?: (p: ExtractProgress) => void): Promise<ExtractResult>;
+}
 
-type Pending = { resolve: (lines: string[]) => void; reject: (e: Error) => void };
+const HTML = buildReaderHtml();
+
+type Pending = { resolve: (r: ExtractResult) => void; reject: (e: Error) => void; onProgress?: (p: ExtractProgress) => void };
+type Message = {
+  type: string; id?: number; pages?: PdfTextItem[][]; ocr?: boolean; truncated?: boolean;
+  message?: string; wrong?: boolean; stage?: ExtractProgress['stage']; page?: number; total?: number; progress?: number;
+};
 
 export function PdfTextExtractor({ ref }: { ref: Ref<PdfTextExtractorHandle> }) {
   const webRef = useRef<WebViewHandle>(null);
@@ -94,29 +87,43 @@ export function PdfTextExtractor({ ref }: { ref: Ref<PdfTextExtractorHandle> }) 
     return new Promise((ok, fail) => l.waiters.push({ ok, fail }));
   }
 
+  async function run(script: (id: number) => string, onProgress?: (p: ExtractProgress) => void): Promise<ExtractResult> {
+    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Tempo esgotado ao carregar o leitor de PDF.')), 20000));
+    await Promise.race([waitLib(), timeout]);
+    const id = nextId.current++;
+    return new Promise<ExtractResult>((resolve, reject) => {
+      pending.current.set(id, { resolve, reject, onProgress });
+      webRef.current?.injectJavaScript(`${script(id)}; true;`);
+    });
+  }
+
   useImperativeHandle(ref, () => ({
-    async extract(base64, password) {
-      const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Tempo esgotado ao carregar o leitor de PDF.')), 20000));
-      await Promise.race([waitLib(), timeout]);
-      const id = nextId.current++;
-      return new Promise<string[]>((resolve, reject) => {
-        pending.current.set(id, { resolve, reject });
-        webRef.current?.injectJavaScript(`window.extractPdf(${id}, ${JSON.stringify(base64)}, ${JSON.stringify(password ?? '')}); true;`);
-      });
+    extractPdf(base64, opts = {}) {
+      return run((id) => `window.extractPdf(${id}, ${JSON.stringify(base64)}, ${JSON.stringify(opts.password ?? '')}, true)`, opts.onProgress);
+    },
+    extractImage(base64, mimeType, onProgress) {
+      return run((id) => `window.extractImage(${id}, ${JSON.stringify(base64)}, ${JSON.stringify(mimeType)})`, onProgress);
     },
   }));
 
   function onMessage(e: { nativeEvent: { data: string } }) {
-    let msg: { type: string; id?: number; pages?: PdfTextItem[][]; message?: string; wrong?: boolean };
+    let msg: Message;
     try { msg = JSON.parse(e.nativeEvent.data); } catch { return; }
     if (msg.type === 'ready') { settleLib(); return; }
     const p = msg.id !== undefined ? pending.current.get(msg.id) : undefined;
     if (msg.type === 'error' && !p) { settleLib(new Error(msg.message)); return; }
     if (!p || msg.id === undefined) return;
+    if (msg.type === 'progress') {
+      p.onProgress?.({ stage: msg.stage ?? 'text', page: msg.page, total: msg.total, progress: msg.progress });
+      return;
+    }
     pending.current.delete(msg.id);
-    if (msg.type === 'result') p.resolve((msg.pages ?? []).flatMap(groupTextItems));
-    else if (msg.type === 'password') p.reject(new PdfPasswordError(!!msg.wrong));
-    else p.reject(new Error(msg.message ?? 'Falha ao ler o PDF.'));
+    if (msg.type === 'result') {
+      let lines = (msg.pages ?? []).flatMap(groupTextItems);
+      if (msg.ocr) lines = cleanOcrLines(lines);
+      p.resolve({ lines, ocr: !!msg.ocr, truncated: !!msg.truncated });
+    } else if (msg.type === 'password') p.reject(new PdfPasswordError(!!msg.wrong));
+    else p.reject(new Error(msg.message ?? 'Falha ao ler o arquivo.'));
   }
 
   return (

@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useRef, useState } from 'react';
 import { Alert, Modal, ScrollView, Text, TextInput, View } from 'react-native';
-import { adjustCardSigns, detectFormat, parseStatementFile, UnsupportedFormatError } from '../../core/importer';
+import { adjustCardSigns, detectFormat, imageMimeType, parseStatementFile, UnsupportedFormatError } from '../../core/importer';
 import { parsePdfText } from '../../core/parsers/pdfText';
 import { formatDateBR } from '../../core/reports';
 import type { ParsedStatement, StatementFormat } from '../../core/types';
@@ -14,18 +14,29 @@ import {
 } from '../../db/repo';
 import { importSession } from '../../lib/importSession';
 import { useAsyncData } from '../../lib/useAsyncData';
-import { PdfPasswordError, PdfTextExtractor, type PdfTextExtractorHandle } from '../../components/PdfTextExtractor';
+import {
+  PdfPasswordError, PdfTextExtractor, type ExtractProgress, type ExtractResult, type PdfTextExtractorHandle,
+} from '../../components/PdfTextExtractor';
 import { Button, Card, Chip, colors, Field, Icon, SectionTitle, styles } from '../../components/ui';
 
 const FORMAT_LABEL: Record<StatementFormat, string> = {
   ofx: 'OFX (Money/Quicken)', csv: 'CSV / texto', qif: 'QIF', xlsx: 'Planilha Excel', ods: 'Planilha OpenDocument', pdf: 'PDF',
+  image: 'Imagem (OCR)',
 };
+
+function progressText(p: ExtractProgress): string {
+  if (p.stage === 'text') return 'Lendo o PDF…';
+  if (p.stage === 'ocr-init') return 'Preparando o reconhecimento de texto (OCR)…\nNa primeira vez, baixa cerca de 5 MB.';
+  const pct = p.progress ? ` ${Math.round(p.progress * 100)}%` : '';
+  return p.total && p.total > 1 ? `Reconhecendo texto (OCR): página ${p.page} de ${p.total}${pct}` : `Reconhecendo texto (OCR)…${pct}`;
+}
 
 interface Loaded {
   fileName: string;
   bytes: Uint8Array;
   format: StatementFormat;
   pdfLines?: string[];
+  ocr?: boolean;
   statement: ParsedStatement;
 }
 
@@ -33,6 +44,7 @@ export default function ImportScreen() {
   const db = useSQLiteContext();
   const extractor = useRef<PdfTextExtractorHandle>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [accountId, setAccountId] = useState<number | 'new' | null>(null);
   const [newName, setNewName] = useState('');
@@ -54,6 +66,11 @@ export default function ImportScreen() {
       if (format === 'pdf') {
         const base64 = await file.base64();
         await readPdf(asset.name, bytes, base64);
+      } else if (format === 'image') {
+        const base64 = await file.base64();
+        const mime = imageMimeType(asset.name, bytes) ?? 'image/jpeg';
+        const r = await extractor.current!.extractImage(base64, mime, (p) => setProgress(progressText(p)));
+        await onExtracted(asset.name, bytes, 'image', r);
       } else {
         await onParsed({ fileName: asset.name, bytes, format, statement: parseStatementFile({ fileName: asset.name, bytes }) });
       }
@@ -62,14 +79,21 @@ export default function ImportScreen() {
       Alert.alert('Arquivo não suportado', msg);
     } finally {
       setBusy(false);
+      setProgress(null);
     }
+  }
+
+  async function onExtracted(fileName: string, bytes: Uint8Array, format: 'pdf' | 'image', r: ExtractResult) {
+    const statement = parseStatementFile({ fileName, bytes, pdfLines: r.lines, ocr: r.ocr });
+    if (r.truncated) statement.warnings.unshift('O OCR leu só as primeiras 20 páginas.');
+    await onParsed({ fileName, bytes, format, pdfLines: r.lines, ocr: r.ocr, statement });
   }
 
   async function readPdf(fileName: string, bytes: Uint8Array, base64: string, pw?: string) {
     try {
-      const lines = await extractor.current!.extract(base64, pw);
+      const r = await extractor.current!.extractPdf(base64, { password: pw, onProgress: (p) => setProgress(progressText(p)) });
       setPassword(null);
-      await onParsed({ fileName, bytes, format: 'pdf', pdfLines: lines, statement: parsePdfText(lines) });
+      await onExtracted(fileName, bytes, 'pdf', r);
     } catch (e) {
       if (e instanceof PdfPasswordError) {
         setPwText('');
@@ -116,8 +140,8 @@ export default function ImportScreen() {
       }
       // Faturas de cartão em CSV/planilha costumam trazer compras como valores positivos.
       let statement = loaded.statement;
-      if (type === 'credit_card' && loaded.format === 'pdf' && statement.account?.type !== 'credit_card' && loaded.pdfLines) {
-        statement = parsePdfText(loaded.pdfLines, { creditCard: true });
+      if (type === 'credit_card' && (loaded.format === 'pdf' || loaded.format === 'image') && statement.account?.type !== 'credit_card' && loaded.pdfLines) {
+        statement = parsePdfText(loaded.pdfLines, { creditCard: true, ocr: loaded.ocr, format: loaded.format });
       } else if (type === 'credit_card' && ['csv', 'xlsx', 'ods', 'qif'].includes(loaded.format)) {
         statement = adjustCardSigns(statement);
       }
@@ -144,17 +168,19 @@ export default function ImportScreen() {
               <Icon name="cloud-upload-outline" size={48} color={colors.primary} />
               <Text style={[styles.sectionTitle, { textAlign: 'center' }]}>Importe o extrato do seu banco</Text>
               <Text style={[styles.muted, { textAlign: 'center' }]}>
-                Aceita OFX, CSV, XLSX, ODS, QIF e PDF. Os lançamentos são classificados automaticamente e você revisa antes de salvar.
+                Aceita OFX, CSV, XLSX, ODS, QIF, PDF e fotos ou prints do extrato (OCR). Os lançamentos são classificados automaticamente e você revisa antes de salvar.
                 Lançamentos já importados são ignorados.
               </Text>
               <Button title="Escolher arquivo" icon="folder-open" onPress={pickFile} loading={busy} style={{ alignSelf: 'stretch', marginTop: 8 }} />
+              {progress ? <Text style={[styles.muted, { textAlign: 'center' }]}>{progress}</Text> : null}
             </View>
           </Card>
           <Card>
             <SectionTitle>Qual formato escolher?</SectionTitle>
             <Tip title="OFX — recomendado" text="É o formato mais preciso: traz identificador único de cada lançamento e os dados da conta. No internet banking procure por “Exportar extrato”, “Money”, “OFX” ou “Quicken”." />
             <Tip title="CSV / Excel" text="Nubank, Inter, C6 e outros oferecem CSV. Faturas de cartão em CSV são ajustadas automaticamente (compras viram saídas)." />
-            <Tip title="PDF" text="Funciona com PDFs gerados pelo banco (não escaneados). PDFs protegidos por senha (geralmente parte do CPF) também são aceitos. Confira os valores na revisão." />
+            <Tip title="PDF" text="PDFs gerados pelo banco são lidos direto. PDFs protegidos por senha (geralmente parte do CPF) também são aceitos. Confira os valores na revisão." />
+            <Tip title="PDF escaneado, foto ou print (OCR)" text="Quando o PDF é uma imagem, o texto é reconhecido no próprio celular (leva alguns segundos por página). Fotos e prints em JPG ou PNG também funcionam: use imagem nítida, reta e bem iluminada, e confira tudo na revisão." />
           </Card>
         </>
       ) : (
@@ -217,7 +243,7 @@ export default function ImportScreen() {
                 setBusy(true);
                 try { await readPdf(password.fileName, password.bytes, password.base64, pwText); }
                 catch (e) { setPassword(null); Alert.alert('Erro', (e as Error).message); }
-                finally { setBusy(false); }
+                finally { setBusy(false); setProgress(null); }
               }}
             />
             <Button title="Cancelar" variant="ghost" onPress={() => setPassword(null)} />

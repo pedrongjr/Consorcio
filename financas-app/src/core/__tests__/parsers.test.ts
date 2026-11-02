@@ -255,3 +255,19 @@ describe('importer', () => {
     expect(dedupeKeys([tx, tx])).toEqual(keys.slice(0, 2));
   });
 });
+
+describe('imagens', () => {
+  it('detecta JPG, PNG e WEBP pelo conteúdo', () => {
+    expect(detectFormat('foto', new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe('image');
+    expect(detectFormat('print.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]))).toBe('image');
+    expect(detectFormat('x.webp', strToU8('RIFF\u0000\u0000\u0000\u0000WEBPVP8 '))).toBe('image');
+  });
+  it('recusa HEIC com mensagem clara', () => {
+    expect(() => detectFormat('IMG_0001.HEIC', new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]))).toThrow(/HEIC/);
+  });
+  it('usa as linhas do OCR e marca o formato', () => {
+    const st = parseStatementFile({ fileName: 'foto.jpg', bytes: new Uint8Array([0xff, 0xd8, 0xff]), pdfLines: ['Janeiro de 2025', '07/01 PADARIA -8,00'] });
+    expect(st.format).toBe('image');
+    expect(st.transactions).toHaveLength(1);
+  });
+});

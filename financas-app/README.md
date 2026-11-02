@@ -8,7 +8,7 @@ Todos os dados ficam **somente no aparelho** (SQLite local). Nenhum extrato é e
 
 | Área | O que faz |
 |---|---|
-| **Importação** | OFX/QFX (SGML e XML, conta e cartão), CSV/TXT (`;` `,` tab), XLSX, ODS, QIF, tabelas HTML salvas como `.xls` e **PDF** (inclusive PDFs com senha). Detecta o formato pelo conteúdo e a codificação (UTF-8 ou Windows-1252). |
+| **Importação** | OFX/QFX (SGML e XML, conta e cartão), CSV/TXT (`;` `,` tab), XLSX, ODS, QIF, tabelas HTML salvas como `.xls`, **PDF** (inclusive com senha) e **PDF escaneado, foto ou print do extrato via OCR** (JPG, PNG, WEBP). Detecta o formato pelo conteúdo e a codificação (UTF-8 ou Windows-1252). |
 | **Revisão antes de salvar** | Lista os lançamentos lidos, marca os **duplicados** (já importados) e permite trocar categorias. A troca vale também para lançamentos com a mesma descrição. |
 | **Classificação automática** | Mais de 600 palavras-chave de estabelecimentos e históricos brasileiros (iFood, Uber, Enel, Sabesp, Drogasil, Netflix, tarifas, IOF, Pix, salário...). Ordem de prioridade: **regras do usuário → aprendizado com lançamentos que você já categorizou → regras padrão**. |
 | **Categorias** | Plano padrão com 13 categorias de despesa e 36 subcategorias, além de receitas e transferências. Transferências (entre contas, pagamento de fatura, aplicações) não contam como gasto. Você pode criar, editar e excluir categorias. |
@@ -22,7 +22,8 @@ Todos os dados ficam **somente no aparelho** (SQLite local). Nenhum extrato é e
 
 * **OFX (recomendado)**: no internet banking procure "Exportar extrato", "Money", "OFX" ou "Quicken". Traz um identificador único por lançamento, então reimportar o mesmo período não duplica nada.
 * **CSV**: Nubank, Inter, C6 e outros. Faturas de cartão em CSV que trazem compras como valores positivos são invertidas automaticamente quando a conta escolhida é do tipo *cartão de crédito*.
-* **PDF**: funciona com PDFs gerados pelo banco. PDFs escaneados (imagem) não têm texto e não podem ser lidos. Como cada banco tem um layout diferente, confira os valores na revisão.
+* **PDF**: funciona com PDFs gerados pelo banco. Como cada banco tem um layout diferente, confira os valores na revisão.
+* **PDF escaneado, foto ou print (OCR)**: quando o PDF praticamente não tem texto, o app desenha cada página como imagem e reconhece o texto em português (Tesseract.js) no próprio celular. Fotos e prints em JPG/PNG/WEBP passam pelo mesmo caminho. Fotos HEIC não são aceitas; use um print ou salve como JPG.
 * **`.xls` antigo (Excel 97-2003)**: não é suportado. Salve como `.xlsx` ou `.csv`.
 
 ## Rodando o projeto
@@ -35,7 +36,17 @@ npm install
 npx expo start          # leia o QR code com o Expo Go (Android) ou com a câmera (iOS)
 ```
 
-> O leitor de PDF usa `react-native-webview`, que já vem no Expo Go. Na primeira leitura de PDF, a biblioteca pdf.js é baixada do cdnjs, então é preciso internet nesse momento. O arquivo em si é processado no aparelho.
+> O leitor de PDF e o OCR rodam num `react-native-webview` invisível (já vem no Expo Go). Na primeira vez são baixados o pdf.js (cdnjs) e, se precisar de OCR, o Tesseract.js com o modelo de português (cerca de 5 MB, jsDelivr); depois ficam em cache. Os arquivos em si são processados no aparelho, nada é enviado.
+
+### Como o OCR funciona
+
+1. O pdf.js tenta extrair o texto. Se a média for menor que 40 caracteres por página, o PDF é tratado como imagem (até 20 páginas).
+2. Cada página é desenhada a ~2000 px de largura e passa pelo Tesseract (português, modelo LSTM).
+3. A inclinação da página é estimada pelas linhas de base do Tesseract e as coordenadas são endireitadas, para que data, descrição e valor de uma linha fiquem juntos mesmo em foto torta.
+4. Erros típicos são corrigidos só em valores e datas: `O`→`0`, `l`/`I`→`1`, `RS`→`R$`, menos lido como aspas/travessão, vírgula perdida (`-2780 3.001,93` → `-27,80`), bordas de tabela.
+5. Em extratos com coluna de saldo, o sinal vem da variação do saldo; se o OCR perdeu o valor e só sobrou o saldo, o valor é calculado pela diferença (com aviso).
+
+Foi verificado de ponta a ponta no Chromium com um PDF escaneado, um print e uma foto torta e desfocada; as linhas lidas pelo Tesseract viraram testes em `src/core/__tests__/pdfLayout.test.ts`. OCR nunca é perfeito: sempre confira a revisão antes de importar.
 
 ### Baixar o APK pronto (Android)
 
@@ -67,7 +78,7 @@ Os identificadores estão em `app.json` (`com.pedrongjr.minhasfinancas`). Altere
 ### Verificações
 
 ```bash
-npm test            # 70 testes dos leitores de extrato, classificador e relatórios
+npm test            # 85 testes dos leitores de extrato, classificador e relatórios
 npm run typecheck
 npx eslint src
 ```
@@ -83,12 +94,14 @@ src/
     accounts|categories|rules|imports.tsx
   core/                   lógica pura em TypeScript, sem dependência de React Native (testada)
     parsers/              ofx, csv, qif, spreadsheet (xlsx/ods), pdfText, table (detecção de colunas)
+    pdfReaderHtml.ts      página do WebView: pdf.js + OCR (Tesseract.js)
+    pdfLayout.ts          agrupa trechos em linhas e limpa erros de OCR
     categories.ts         plano de categorias + palavras-chave
     classifier.ts         motor de classificação
     importer.ts           detecção de formato, ajuste de cartão, deduplicação
     reports.ts            resumos mensais, totais por categoria, orçamento
   db/                     SQLite: schema/migrações e consultas
-  components/             UI, seletor de categoria, extrator de PDF (pdf.js em WebView)
+  components/             UI, seletor de categoria, extrator de PDF/OCR (WebView)
 ```
 
 ## Como o app decide a categoria

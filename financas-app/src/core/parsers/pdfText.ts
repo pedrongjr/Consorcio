@@ -46,6 +46,10 @@ export function looksLikeCardBill(text: string): boolean {
 export interface PdfParseOptions {
   /** Força o modo fatura de cartão (valores positivos = gastos). */
   creditCard?: boolean;
+  /** O texto veio de OCR (PDF escaneado ou foto). */
+  ocr?: boolean;
+  /** Formato a registrar no resultado. */
+  format?: 'pdf' | 'image';
 }
 
 export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): ParsedStatement {
@@ -57,6 +61,12 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
   let currentDate: string | null = null;
   let prevBalance: number | null = null;
   let sawTransaction = false;
+  let inferredFromBalance = 0;
+
+  // Extratos com coluna de saldo: a maioria das linhas datadas tem 2 valores.
+  // No OCR, uma linha com um valor só provavelmente perdeu o valor e ficou com o saldo.
+  const dated = lines.filter((l) => DATE_RE.test(l.trim()) && !/SALDO/i.test(l)).map((l) => moneyTokens(l.trim().replace(DATE_RE, '')).length).filter((n) => n > 0);
+  const hasBalanceColumn = dated.length >= 3 && dated.filter((n) => n >= 2).length / dated.length >= 0.6;
 
   for (const rawLine of lines) {
     const line = rawLine.replace(/\s+/g, ' ').trim();
@@ -95,9 +105,17 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
     const descNorm = normalizeText(description);
     if (!/[A-Z]{2,}/.test(descNorm) || SKIP.test(descNorm) || SKIP.test(norm)) continue;
 
-    const amountTok = tokens[0];
+    let amountTok = tokens[0];
     let amount = amountTok.value;
-    const balanceTok = tokens.length >= 2 ? tokens[tokens.length - 1] : null;
+    let balanceTok = tokens.length >= 2 ? tokens[tokens.length - 1] : null;
+
+    if (opts.ocr && hasBalanceColumn && !isCard && tokens.length === 1 && prevBalance !== null) {
+      // O único número é o saldo: o valor é a diferença para o saldo anterior.
+      balanceTok = tokens[0];
+      amount = balanceTok.value - prevBalance;
+      amountTok = { ...amountTok, explicitSign: true };
+      inferredFromBalance++;
+    }
 
     if (!amountTok.explicitSign) {
       let resolved = false;
@@ -126,9 +144,14 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
   }
 
   if (transactions.length === 0) {
-    warnings.push('Nenhum lançamento reconhecido no PDF. Se for um PDF escaneado (imagem), exporte o extrato em OFX ou CSV pelo internet banking.');
+    warnings.push(opts.ocr
+      ? 'Nenhum lançamento reconhecido pelo OCR. Use uma imagem nítida, reta e bem iluminada, ou exporte o extrato em OFX/CSV.'
+      : 'Nenhum lançamento reconhecido no PDF. Exporte o extrato em OFX ou CSV pelo internet banking.');
+  } else if (opts.ocr) {
+    if (inferredFromBalance) warnings.push(`${inferredFromBalance} valor(es) não foram lidos e foram calculados pela diferença de saldo.`);
+    warnings.push('Texto lido por OCR (reconhecimento de imagem): confira datas, valores e sinais com atenção antes de importar.');
   } else {
     warnings.push('PDF lido por aproximação: confira valores e sinais antes de importar.');
   }
-  return { format: 'pdf', transactions, warnings, account: isCard ? { type: 'credit_card' } : undefined };
+  return { format: opts.format ?? 'pdf', transactions, warnings, account: isCard ? { type: 'credit_card' } : undefined };
 }

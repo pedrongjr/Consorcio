@@ -2,7 +2,49 @@
 
 App para **iOS e Android** (React Native + Expo) que importa os extratos exportados pelos bancos, **classifica cada lançamento em categorias e subcategorias** e mostra para onde vai o dinheiro, no estilo do Minhas Economias, Mobills e Organizze.
 
-Todos os dados ficam **somente no aparelho** (SQLite local). Nenhum extrato é enviado para servidores.
+No celular, todos os dados ficam **somente no aparelho** (SQLite local). Há também uma **versão web multiusuário** (veja abaixo).
+
+## Versão web (multiusuário)
+
+Além dos apps para celular, há uma versão web com **cadastro e login**. Cada usuário tem a própria conta, e os extratos de um nunca aparecem para outro.
+
+* **Front-end**: as mesmas telas do app (Expo/React Native Web). O arquivo do extrato é lido e o OCR roda **no navegador**; só os lançamentos vão para o servidor.
+* **Servidor** (`server/`): Node + Express + Postgres, com a mesma lógica de classificação do app.
+
+### Segurança e isolamento entre usuários
+
+| Camada | Como funciona |
+|---|---|
+| Senhas | `scrypt` (N=2^15) com sal aleatório; nunca guardadas em texto. Mínimo de 8 caracteres e bloqueio de senhas comuns. |
+| Sessão | Token aleatório de 256 bits em cookie `HttpOnly`, `SameSite=Lax` e `Secure` (em produção). No banco fica só o hash SHA-256 do token. Sair encerra a sessão no servidor; trocar a senha derruba as outras sessões. |
+| Força bruta | Limite de tentativas por IP e por e-mail, e bloqueio da conta por 15 min após 10 senhas erradas. Senha errada e e-mail inexistente dão a mesma resposta, no mesmo tempo. |
+| Isolamento (1ª camada) | Toda consulta filtra pelo `user_id` da sessão, que nunca vem do cliente. Cada ID recebido é conferido como pertencente ao usuário. |
+| Isolamento (2ª camada) | **Row-Level Security forçado no Postgres**: cada requisição roda numa transação marcada com o usuário, e o banco só devolve e só aceita linhas dele, mesmo que uma consulta esqueça o filtro. Quando possível, as consultas usam um papel sem privilégios (`financas_rls`). As chaves estrangeiras incluem o `user_id`, então não dá para pendurar um lançamento na conta de outra pessoa. |
+| Web | Proteção CSRF (cabeçalho próprio + checagem de `Origin`), CSP estrita (`script-src 'self'`), HSTS, `X-Frame-Options: DENY`, `no-store` na API. O leitor de PDF/OCR roda num iframe em sandbox, sem acesso aos cookies. |
+| Validação | Todos os parâmetros da API são validados (tipos, tamanhos, formatos) antes de chegar ao banco; as consultas são sempre parametrizadas. |
+
+Os testes em `server/__tests__/api.test.ts` sobem a API contra um Postgres real e cobrem cadastro, login, limite de tentativas, bloqueio, CSRF e cookies. Eles também tentam **acessar, alterar e apagar os dados de um usuário a partir de outro por todas as rotas** e confirmam que o RLS barra o acesso mesmo com SQL sem filtro. Tudo roda em dois cenários: conexão como superusuário e como dono comum das tabelas (o caso dos Postgres hospedados).
+
+### Publicar (Render, com Postgres incluso)
+
+O repositório tem um blueprint (`render.yaml`, na raiz) que cria o banco e o serviço:
+
+1. Crie uma conta em [render.com](https://render.com) e conecte o GitHub.
+2. **New → Blueprint** → escolha este repositório → **Apply**.
+3. Em alguns minutos o site fica no ar em `https://minhas-financas-XXXX.onrender.com`.
+
+> No plano gratuito do Render, o serviço "dorme" sem uso (o primeiro acesso demora ~1 min) e o banco gratuito expira após 30 dias. Para uso contínuo, use um plano pago ou um Postgres externo (ex.: [Neon](https://neon.tech), gratuito): basta trocar a variável `DATABASE_URL`.
+
+**Outras hospedagens**: a cada push, o GitHub Actions publica a imagem `ghcr.io/pedrongjr/minhas-financas-web:latest`. Qualquer serviço que rode Docker (Fly.io, Railway, Google Cloud Run, uma VPS) serve. Defina `DATABASE_URL` (Postgres 15+) e `NODE_ENV=production`, e exponha a porta 3000 atrás de HTTPS.
+
+### Rodar localmente
+
+```bash
+cd financas-app
+npm run build:web && npm run build:server
+DATABASE_URL=postgres://usuario:senha@localhost:5432/financas npm run start:server   # http://localhost:3000
+TEST_DATABASE_URL=postgres://postgres:senha@localhost:5432/postgres npm test          # inclui os testes da API
+```
 
 ## Funcionalidades
 
@@ -78,7 +120,7 @@ Os identificadores estão em `app.json` (`com.pedrongjr.minhasfinancas`). Altere
 ### Verificações
 
 ```bash
-npm test            # 85 testes dos leitores de extrato, classificador e relatórios
+npm test            # 85 testes do núcleo (+40 da API com TEST_DATABASE_URL) dos leitores de extrato, classificador e relatórios
 npm run typecheck
 npx eslint src
 ```

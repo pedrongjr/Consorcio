@@ -1,7 +1,8 @@
 import { router } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../../db/DbProvider';
 import { useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { parseAmount, parseDate } from '../../core/text';
 import { formatDateBR } from '../../core/reports';
 import { addManualTransaction, listAccounts, listCategories, type AccountWithBalance, type Category } from '../../db/repo';
@@ -9,7 +10,7 @@ import { CategoryPicker } from '../../components/CategoryPicker';
 import { Button, Card, CategoryBadge, Chip, colors, Field, styles, todayIso } from '../../components/ui';
 
 export default function NewTransaction() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [cats, setCats] = useState<Category[]>([]);
   const [type, setType] = useState<'out' | 'in'>('out');
@@ -30,10 +31,10 @@ export default function NewTransaction() {
   async function save() {
     const cents = parseAmount(amount);
     const iso = parseDate(date);
-    if (!accountId) return Alert.alert('Cadastre uma conta antes', 'Vá em Mais → Contas e cartões.');
-    if (!cents) return Alert.alert('Informe o valor');
-    if (!iso) return Alert.alert('Data inválida', 'Use o formato dd/mm/aaaa.');
-    if (!description.trim()) return Alert.alert('Informe a descrição');
+    if (!accountId) return showAlert('Cadastre uma conta antes', 'Vá em Mais → Contas e cartões.');
+    if (!cents) return showAlert('Informe o valor');
+    if (!iso) return showAlert('Data inválida', 'Use o formato dd/mm/aaaa.');
+    if (!description.trim()) return showAlert('Informe a descrição');
     await addManualTransaction(db, {
       accountId, date: iso, description: description.trim(),
       amountCents: type === 'out' ? -Math.abs(cents) : Math.abs(cents), categoryKey,

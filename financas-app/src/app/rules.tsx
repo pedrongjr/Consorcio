@@ -1,13 +1,14 @@
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../db/DbProvider';
 import { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import { showAlert } from '../lib/dialog';
 import { deleteRule, listCategories, listRules, reclassifyAll, saveRule } from '../db/repo';
 import { useAsyncData } from '../lib/useAsyncData';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { Button, Card, CategoryBadge, Chip, colors, EmptyState, Field, Icon, SectionTitle, styles } from '../components/ui';
 
 export default function Rules() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const { data, reload } = useAsyncData(async () => ({ rules: await listRules(db), cats: await listCategories(db) }), [db]);
   const [pattern, setPattern] = useState('');
   const [categoryKey, setCategoryKey] = useState<string | null>(null);
@@ -16,12 +17,12 @@ export default function Rules() {
   const catMap = useMemo(() => new Map((data?.cats ?? []).map((c) => [c.key, c])), [data?.cats]);
 
   async function add() {
-    if (!pattern.trim() || !categoryKey) return Alert.alert('Preencha o texto e a categoria');
+    if (!pattern.trim() || !categoryKey) return showAlert('Preencha o texto e a categoria');
     await saveRule(db, pattern, categoryKey, direction);
     setPattern(''); setCategoryKey(null);
     const n = await reclassifyAll(db);
     reload();
-    if (n) Alert.alert('Regra criada', `${n} lançamento(s) foram reclassificados.`);
+    if (n) showAlert('Regra criada', `${n} lançamento(s) foram reclassificados.`);
   }
 
   const cat = categoryKey ? catMap.get(categoryKey) : undefined;

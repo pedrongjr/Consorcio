@@ -21,7 +21,11 @@
       "package": "com.pedrongjr.minhasfinancas"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "output": "single",
+      "bundler": "metro",
+      "name": "Minhas Finanças",
+      "themeColor": "#1B7F6B"
     },
     "plugins": [
       "expo-router",

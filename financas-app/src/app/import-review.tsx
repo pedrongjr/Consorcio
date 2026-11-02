@@ -1,7 +1,8 @@
 import { router, Stack } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../db/DbProvider';
 import { useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, Text, View } from 'react-native';
+import { FlatList, Pressable, Text, View } from 'react-native';
+import { showAlert } from '../lib/dialog';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { descriptionKey } from '../core/text';
 import { formatDateBR } from '../core/reports';
@@ -12,7 +13,7 @@ import { CategoryPicker } from '../components/CategoryPicker';
 import { Button, CategoryBadge, colors, EmptyState, Icon, Money, styles } from '../components/ui';
 
 export default function ImportReview() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const session = importSession.get();
   const [items, setItems] = useState<ImportCandidate[]>(session?.candidates ?? []);
   const [editing, setEditing] = useState<number | null>(null);
@@ -61,10 +62,13 @@ export default function ImportReview() {
     try {
       const r = await commitImport(db, { accountId: session.accountId, fileName: session.fileName, format: session.statement.format, candidates: items });
       importSession.clear();
-      Alert.alert('Importação concluída', `${r.imported} lançamento(s) importado(s).${r.skipped ? ` ${r.skipped} ignorado(s).` : ''}`);
-      router.dismissTo('/transactions');
+      showAlert('Importação concluída', `${r.imported} lançamento(s) importado(s).${r.skipped ? ` ${r.skipped} ignorado(s).` : ''}`);
+      // Abre a lista no mês mais recente do extrato importado.
+      const months = items.filter((i) => i.selected).map((i) => i.date.slice(0, 7)).sort();
+      const month = months[months.length - 1];
+      router.dismissTo(month ? { pathname: '/transactions', params: { month } } : '/transactions');
     } catch (e) {
-      Alert.alert('Erro ao importar', (e as Error).message);
+      showAlert('Erro ao importar', (e as Error).message);
     } finally {
       setSaving(false);
     }

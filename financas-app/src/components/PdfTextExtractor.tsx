@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import { WebView as RNWebView } from 'react-native-webview';
 import { cleanOcrLines, groupTextItems, type PdfTextItem } from '../core/pdfLayout';
 import { buildReaderHtml } from '../core/pdfReaderHtml';
+import { PdfPasswordError, type ExtractProgress, type ExtractResult, type PdfTextExtractorHandle } from './PdfTextExtractor.shared';
 
 /**
  * Lê PDFs (pdf.js) e faz OCR de PDFs escaneados e de fotos de extrato
@@ -24,32 +25,8 @@ const WebView = RNWebView as unknown as ComponentType<{
   onError: () => void;
 }>;
 
-export class PdfPasswordError extends Error {
-  constructor(public readonly wrongPassword: boolean) {
-    super(wrongPassword ? 'Senha do PDF incorreta.' : 'Este PDF é protegido por senha.');
-  }
-}
-
-export interface ExtractProgress {
-  stage: 'text' | 'ocr-init' | 'ocr';
-  page?: number;
-  total?: number;
-  /** 0..1 dentro da página atual. */
-  progress?: number;
-}
-
-export interface ExtractResult {
-  lines: string[];
-  /** O texto veio de OCR (PDF escaneado ou imagem). */
-  ocr: boolean;
-  /** O PDF tinha mais páginas do que o limite de OCR. */
-  truncated: boolean;
-}
-
-export interface PdfTextExtractorHandle {
-  extractPdf(base64: string, opts?: { password?: string; onProgress?: (p: ExtractProgress) => void }): Promise<ExtractResult>;
-  extractImage(base64: string, mimeType: string, onProgress?: (p: ExtractProgress) => void): Promise<ExtractResult>;
-}
+export { PdfPasswordError } from './PdfTextExtractor.shared';
+export type { ExtractProgress, ExtractResult, PdfTextExtractorHandle } from './PdfTextExtractor.shared';
 
 const HTML = buildReaderHtml();
 

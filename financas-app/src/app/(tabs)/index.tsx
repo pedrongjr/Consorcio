@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
-import { useEffect, useState } from 'react';
+import { useDb } from '../../db/DbProvider';
+import { useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import {
   budgetProgress, monthLabel, monthlySummary, shiftMonth, totalsByCategory, formatBRL,
@@ -12,17 +12,21 @@ import {
 } from '../../components/ui';
 
 export default function Dashboard() {
-  const db = useSQLiteContext();
-  const [month, setMonth] = useState(currentMonth());
-  const [autoMonthDone, setAutoMonthDone] = useState(false);
-
-  // Na primeira abertura, vai para o mês mais recente que tem lançamentos.
-  useEffect(() => {
-    if (autoMonthDone) return;
-    latestMonth(db).then((m) => { if (m && m < currentMonth()) setMonth(m); setAutoMonthDone(true); });
-  }, [db, autoMonthDone]);
+  const db = useDb();
+  const [month, setMonthState] = useState(currentMonth());
+  // Enquanto o usuário não escolher um mês, o Resumo segue o mês mais recente
+  // com lançamentos (ex.: logo depois de importar um extrato antigo).
+  const userPicked = useRef(false);
+  const setMonth = (m: string) => { userPicked.current = true; setMonthState(m); };
 
   const { data } = useAsyncData(async () => {
+    if (!userPicked.current) {
+      const latest = await latestMonth(db);
+      if (latest && latest < currentMonth() && latest !== month) {
+        const hasCurrent = (await reportTransactions(db, month, month)).length > 0;
+        if (!hasCurrent) { setMonthState(latest); return undefined; }
+      }
+    }
     const [accounts, cats, budgets, txs] = await Promise.all([
       listAccounts(db), listCategories(db), listBudgets(db), reportTransactions(db, shiftMonth(month, -5), month),
     ]);

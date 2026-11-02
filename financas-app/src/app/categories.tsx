@@ -1,6 +1,7 @@
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../db/DbProvider';
 import { useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { showAlert } from '../lib/dialog';
 import type { CategoryKind } from '../core/types';
 import { deleteCategory, listCategories, saveCategory, type Category } from '../db/repo';
 import { useAsyncData } from '../lib/useAsyncData';
@@ -17,7 +18,7 @@ const COLORS = ['#E4572E', '#29335C', '#F3A712', '#2E86AB', '#6A4C93', '#1B998B'
 interface Draft { key?: string; name: string; kind: CategoryKind; parent: string | null; icon: string; color: string }
 
 export default function Categories() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const [kind, setKind] = useState<CategoryKind>('expense');
   const [draft, setDraft] = useState<Draft | null>(null);
   const { data: cats, reload } = useAsyncData(() => listCategories(db), [db]);
@@ -26,14 +27,14 @@ export default function Categories() {
   const childrenOf = (k: string) => (cats ?? []).filter((c) => c.parent === k);
 
   async function save() {
-    if (!draft?.name.trim()) return Alert.alert('Informe o nome');
+    if (!draft?.name.trim()) return showAlert('Informe o nome');
     await saveCategory(db, { ...draft, name: draft.name.trim() });
     setDraft(null);
     reload();
   }
 
   function remove(c: Draft) {
-    Alert.alert(`Excluir “${c.name}”?`, 'Subcategorias também serão excluídas. Os lançamentos ficarão sem categoria.', [
+    showAlert(`Excluir “${c.name}”?`, 'Subcategorias também serão excluídas. Os lançamentos ficarão sem categoria.', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: async () => { await deleteCategory(db, c.key!); setDraft(null); reload(); } },
     ]);

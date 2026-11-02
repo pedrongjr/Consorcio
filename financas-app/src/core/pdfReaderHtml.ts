@@ -37,12 +37,35 @@ export const SCANNED_CHARS_PER_PAGE = 40;
 /** Limite de páginas para OCR (cada página leva alguns segundos no celular). */
 export const MAX_OCR_PAGES = 20;
 
-export function buildReaderHtml(urls: ReaderUrls = DEFAULT_READER_URLS): string {
+export interface ReaderOptions {
+  /**
+   * `native` (padrão): fala com o React Native (`ReactNativeWebView.postMessage`
+   * e `injectJavaScript`). `parent`: roda num iframe da versão web e conversa com
+   * a página por `postMessage`.
+   */
+  bridge?: 'native' | 'parent';
+}
+
+export function buildReaderHtml(urls: ReaderUrls = DEFAULT_READER_URLS, opts: ReaderOptions = {}): string {
   const cfg = JSON.stringify({ ...urls, scannedChars: SCANNED_CHARS_PER_PAGE, maxOcrPages: MAX_OCR_PAGES });
+  const bridge = opts.bridge ?? 'native';
   return `<!doctype html><html><head><meta charset="utf-8">
 <script src="${urls.pdfjs}"></script></head><body><script>
 var CFG = ${cfg};
-function post(m) { window.ReactNativeWebView.postMessage(JSON.stringify(m)); }
+var BRIDGE = ${JSON.stringify(bridge)};
+function post(m) {
+  if (BRIDGE === 'parent') window.parent.postMessage(JSON.stringify(m), '*');
+  else window.ReactNativeWebView.postMessage(JSON.stringify(m));
+}
+if (BRIDGE === 'parent') {
+  // Comandos vindos da página: { cmd: 'extractPdf' | 'extractImage', args: [...] }
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== window.parent) return;
+    var m; try { m = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data; } catch (e) { return; }
+    if (m && m.cmd === 'extractPdf') window.extractPdf.apply(null, m.args);
+    else if (m && m.cmd === 'extractImage') window.extractImage.apply(null, m.args);
+  });
+}
 if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfjsWorker;
   post({ type: 'ready' });

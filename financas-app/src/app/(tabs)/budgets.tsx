@@ -1,6 +1,7 @@
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../../db/DbProvider';
 import { useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { budgetProgress, formatBRL, monthlySummary, shiftMonth, totalsByCategory } from '../../core/reports';
 import { parseAmount } from '../../core/text';
 import { categoryMap, listBudgets, listCategories, reportTransactions, setBudget, type Category } from '../../db/repo';
@@ -12,7 +13,7 @@ import { Button, Card, colors, currentMonth, Icon, Money, MonthSwitcher, Progres
  * por categoria e acompanha-se o quanto já foi gasto no mês.
  */
 export default function Budgets() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const [month, setMonth] = useState(currentMonth());
   const [editing, setEditing] = useState<{ cat: Category; value: string; avg: number } | null>(null);
 
@@ -37,7 +38,7 @@ export default function Budgets() {
   async function saveBudget() {
     if (!editing) return;
     const cents = editing.value.trim() ? parseAmount(editing.value) : 0;
-    if (cents === null) return Alert.alert('Valor inválido');
+    if (cents === null) return showAlert('Valor inválido');
     await setBudget(db, editing.cat.key, Math.abs(cents));
     setEditing(null);
     reload();

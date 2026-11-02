@@ -1,9 +1,9 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { File } from 'expo-file-system';
 import { router } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../../db/DbProvider';
 import { useRef, useState } from 'react';
-import { Alert, Modal, ScrollView, Text, TextInput, View } from 'react-native';
+import { Modal, ScrollView, Text, TextInput, View } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { adjustCardSigns, detectFormat, imageMimeType, parseStatementFile, UnsupportedFormatError } from '../../core/importer';
 import { parsePdfText } from '../../core/parsers/pdfText';
 import { formatDateBR } from '../../core/reports';
@@ -12,6 +12,7 @@ import {
   ACCOUNT_TYPES, accountExternalKey, bankName, findAccountByExternalKey, listAccounts, prepareImport, saveAccount,
   type AccountType, type AccountWithBalance,
 } from '../../db/repo';
+import { readPickedFile } from '../../lib/files';
 import { importSession } from '../../lib/importSession';
 import { useAsyncData } from '../../lib/useAsyncData';
 import {
@@ -41,7 +42,7 @@ interface Loaded {
 }
 
 export default function ImportScreen() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const extractor = useRef<PdfTextExtractorHandle>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -60,8 +61,8 @@ export default function ImportScreen() {
     const asset = res.assets[0];
     setBusy(true);
     try {
-      const file = new File(asset.uri);
-      const bytes = await file.bytes();
+      const file = await readPickedFile(asset);
+      const bytes = file.bytes;
       const format = detectFormat(asset.name, bytes);
       if (format === 'pdf') {
         const base64 = await file.base64();
@@ -76,7 +77,7 @@ export default function ImportScreen() {
       }
     } catch (e) {
       const msg = e instanceof UnsupportedFormatError ? e.message : `Não foi possível ler o arquivo: ${(e as Error).message}`;
-      Alert.alert('Arquivo não suportado', msg);
+      showAlert('Arquivo não suportado', msg);
     } finally {
       setBusy(false);
       setProgress(null);
@@ -106,7 +107,7 @@ export default function ImportScreen() {
 
   async function onParsed(l: Loaded) {
     if (l.statement.transactions.length === 0) {
-      Alert.alert('Nenhum lançamento encontrado', l.statement.warnings.join('\n') || 'Verifique se o arquivo é um extrato.');
+      showAlert('Nenhum lançamento encontrado', l.statement.warnings.join('\n') || 'Verifique se o arquivo é um extrato.');
       return;
     }
     setLoaded(l);
@@ -126,7 +127,7 @@ export default function ImportScreen() {
       let id: number;
       let type: AccountType;
       if (accountId === 'new') {
-        if (!newName.trim()) { Alert.alert('Informe o nome da conta'); return; }
+        if (!newName.trim()) { showAlert('Informe o nome da conta'); return; }
         id = await saveAccount(db, {
           name: newName.trim(), type: newType, bank: bankName(loaded.statement.account?.bankId) ?? null,
           external_key: accountExternalKey(loaded.statement.account),
@@ -242,7 +243,7 @@ export default function ImportScreen() {
                 if (!password) return;
                 setBusy(true);
                 try { await readPdf(password.fileName, password.bytes, password.base64, pwText); }
-                catch (e) { setPassword(null); Alert.alert('Erro', (e as Error).message); }
+                catch (e) { setPassword(null); showAlert('Erro', (e as Error).message); }
                 finally { setBusy(false); setProgress(null); }
               }}
             />

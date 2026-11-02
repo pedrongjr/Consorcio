@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../../db/DbProvider';
 import { useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { formatDateBR } from '../../core/reports';
@@ -11,7 +11,7 @@ import {
 } from '../../components/ui';
 
 export default function Transactions() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const params = useLocalSearchParams<{ category?: string; month?: string; account?: string }>();
   const [month, setMonth] = useState<string | null>(params.month ?? currentMonth());
   const [accountId, setAccountId] = useState<number | undefined>(params.account ? Number(params.account) : undefined);

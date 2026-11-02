@@ -1,6 +1,7 @@
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../db/DbProvider';
 import { useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { showAlert } from '../lib/dialog';
 import { parseAmount } from '../core/text';
 import { ACCOUNT_TYPES, deleteAccount, listAccounts, saveAccount, type AccountType, type AccountWithBalance } from '../db/repo';
 import { useAsyncData } from '../lib/useAsyncData';
@@ -11,12 +12,12 @@ const COLORS = ['#2A9D8F', '#E76F51', '#264653', '#8338EC', '#FB8500', '#3A86FF'
 interface Draft { id?: number; name: string; type: AccountType; initial: string; color: string }
 
 export default function Accounts() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const { data, reload } = useAsyncData(() => listAccounts(db), [db]);
   const [draft, setDraft] = useState<Draft | null>(null);
 
   async function save() {
-    if (!draft?.name.trim()) return Alert.alert('Informe o nome');
+    if (!draft?.name.trim()) return showAlert('Informe o nome');
     await saveAccount(db, {
       id: draft.id, name: draft.name.trim(), type: draft.type, color: draft.color,
       initial_balance_cents: parseAmount(draft.initial || '0') ?? 0,
@@ -26,7 +27,7 @@ export default function Accounts() {
   }
 
   function remove(a: AccountWithBalance) {
-    Alert.alert(`Excluir “${a.name}”?`, `Os ${a.tx_count} lançamento(s) desta conta também serão excluídos.`, [
+    showAlert(`Excluir “${a.name}”?`, `Os ${a.tx_count} lançamento(s) desta conta também serão excluídos.`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: async () => { await deleteAccount(db, a.id); setDraft(null); reload(); } },
     ]);

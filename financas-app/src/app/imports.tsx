@@ -1,15 +1,16 @@
-import { useSQLiteContext } from 'expo-sqlite';
-import { Alert, ScrollView, Text, View } from 'react-native';
+import { useDb } from '../db/DbProvider';
+import { ScrollView, Text, View } from 'react-native';
+import { showAlert } from '../lib/dialog';
 import { listImports, undoImport, type ImportRecord } from '../db/repo';
 import { useAsyncData } from '../lib/useAsyncData';
 import { Button, Card, colors, EmptyState, styles } from '../components/ui';
 
 export default function Imports() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const { data, reload } = useAsyncData(() => listImports(db), [db]);
 
   function undo(i: ImportRecord) {
-    Alert.alert('Desfazer importação?', `Os ${i.imported_count} lançamento(s) importados de “${i.file_name}” serão excluídos.`, [
+    showAlert('Desfazer importação?', `Os ${i.imported_count} lançamento(s) importados de “${i.file_name}” serão excluídos.`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Desfazer', style: 'destructive', onPress: async () => { await undoImport(db, i.id); reload(); } },
     ]);

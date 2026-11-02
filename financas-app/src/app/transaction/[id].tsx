@@ -1,7 +1,8 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDb } from '../../db/DbProvider';
 import { useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import { Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { suggestRulePattern } from '../../core/classifier';
 import { formatDateBR } from '../../core/reports';
 import {
@@ -16,7 +17,7 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 export default function TransactionDetail() {
-  const db = useSQLiteContext();
+  const db = useDb();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [tx, setTx] = useState<Transaction | null>(null);
   const [cats, setCats] = useState<Category[]>([]);
@@ -61,12 +62,12 @@ export default function TransactionDetail() {
       await saveRule(db, pattern, categoryKey, tx.amount_cents >= 0 ? 'in' : 'out');
       msgs.push(`Regra criada: “${pattern.trim().toUpperCase()}” → ${cat?.name}. Será usada nas próximas importações.`);
     }
-    if (msgs.length) Alert.alert('Salvo', msgs.join('\n\n'));
+    if (msgs.length) showAlert('Salvo', msgs.join('\n\n'));
     router.back();
   }
 
   function remove() {
-    Alert.alert('Excluir lançamento?', 'Esta ação não pode ser desfeita.', [
+    showAlert('Excluir lançamento?', 'Esta ação não pode ser desfeita.', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: async () => { await deleteTransaction(db, tx!.id); router.back(); } },
     ]);

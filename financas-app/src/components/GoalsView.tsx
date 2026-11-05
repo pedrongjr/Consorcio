@@ -5,12 +5,13 @@ import { useDb } from '../db/DbProvider';
 import { listGoals } from '../db/repo';
 import { describePlan, planFor, planningContext } from '../lib/planning';
 import { useAsyncData } from '../lib/useAsyncData';
+import { HowToReachCard } from './HowToReach';
 import { Button, Card, colors, EmptyState, Icon, Money, ProgressBar, styles } from './ui';
 
-/** Lista de objetivos com o plano de cada um e o total necessário por mês. */
+/** Lista de sonhos com o plano de cada um e o total necessário por mês. */
 export function GoalsView() {
   const db = useDb();
-  const { data } = useAsyncData(async () => {
+  const { data, reload } = useAsyncData(async () => {
     const ctx = await planningContext(db);
     const goals = await listGoals(db, ctx.since);
     return { ctx, items: goals.map((g) => ({ g, plan: planFor(g, ctx) })) };
@@ -41,11 +42,15 @@ export function GoalsView() {
               <Text style={{ marginTop: 4, color: surplus > 0 && totalNeeded <= surplus ? colors.text : colors.expense }}>
                 {surplus > 0 && totalNeeded <= surplus
                   ? `Usa ${Math.round((totalNeeded / surplus) * 100)}% da sua sobra.`
-                  : 'Os objetivos pedem mais do que sobra por mês. Reveja prazos, valores ou gastos.'}
+                  : 'Os sonhos pedem mais do que sobra por mês. Veja abaixo onde economizar, ou reveja prazos e valores.'}
               </Text>
             </View>
           ) : null}
         </Card>
+      ) : null}
+
+      {data && surplus !== null && totalNeeded > Math.max(0, surplus) ? (
+        <HowToReachCard monthlyCents={totalNeeded} ctx={data.ctx} onBudgets={reload} />
       ) : null}
 
       {items.map(({ g, plan }) => {
@@ -80,10 +85,10 @@ export function GoalsView() {
         <EmptyState
           icon="star-outline"
           title="Quer realizar seus sonhos?"
-          text="Crie um objetivo (viagem, carro, casa, reserva...) e veja quanto guardar por mês para chegar lá."
+          text="Escolha um sonho (viagem, carro, casa, reserva...) e o app mostra quanto guardar por mês, onde economizar e como automatizar."
         />
       ) : null}
-      <Button title="Novo objetivo" icon="add" onPress={() => router.push('/goal/new')} />
+      <Button title="Novo sonho" icon="add" onPress={() => router.push('/goal/new')} />
     </View>
   );
 }

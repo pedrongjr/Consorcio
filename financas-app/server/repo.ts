@@ -3,11 +3,12 @@ import { Classifier, displayDescription, isGenericText, similarityKey, type Hist
 import { DEFAULT_RULES } from '../src/core/categories';
 import { dedupeKeys } from '../src/core/importer';
 import { descriptionKey, normalizeText } from '../src/core/text';
+import { findTransferPairs, mirrorDescription, transferCategoryFor, TRANSFER_WINDOW_DAYS, type TransferCandidate } from '../src/core/transfers';
 import {
   RULE_TOO_GENERIC,
   type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
   type ClassifyResult, type Goal, type GoalEntry, type GoalInput, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
-  type TxFilter,
+  type TransferInput, type TransferResult, type TxFilter,
 } from '../src/db/shared';
 import type { Tx } from './db';
 
@@ -196,6 +197,7 @@ export async function listTransactions(tx: Tx, uid: number, f: TxFilter = {}): P
   const p = (v: string | number) => { params.push(v); return `$${params.length}`; };
   if (f.month) where.push(`t.date LIKE ${p(`${f.month}-%`)}`);
   if (f.accountId) where.push(`t.account_id = ${p(f.accountId)}`);
+  if (f.accountIds?.length) where.push(`t.account_id IN (${f.accountIds.map((id) => p(id)).join(', ')})`);
   if (f.categoryKey) {
     const k = p(f.categoryKey);
     where.push(`(t.category_key = ${k} OR t.category_key IN (SELECT key FROM categories WHERE user_id = $1 AND parent = ${k}))`);
@@ -207,8 +209,10 @@ export async function listTransactions(tx: Tx, uid: number, f: TxFilter = {}): P
   }
   const r = await tx.query(
     `SELECT t.id, t.account_id, a.name AS account_name, t.date, t.description, t.memo, t.notes,
-            t.amount_cents, t.category_key, t.category_source
+            t.amount_cents, t.category_key, t.category_source,
+            t.transfer_account_id, ta.name AS transfer_account_name, t.transfer_peer_id, t.mirror
      FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.user_id = t.user_id
+     LEFT JOIN accounts ta ON ta.id = t.transfer_account_id AND ta.user_id = t.user_id
      WHERE ${where.join(' AND ')}
      ORDER BY t.date DESC, t.id DESC LIMIT 2000`,
     params,
@@ -219,8 +223,10 @@ export async function listTransactions(tx: Tx, uid: number, f: TxFilter = {}): P
 export async function getTransaction(tx: Tx, uid: number, id: number): Promise<Transaction | null> {
   const r = await tx.query(
     `SELECT t.id, t.account_id, a.name AS account_name, t.date, t.description, t.memo, t.notes,
-            t.amount_cents, t.category_key, t.category_source
+            t.amount_cents, t.category_key, t.category_source,
+            t.transfer_account_id, ta.name AS transfer_account_name, t.transfer_peer_id, t.mirror
      FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.user_id = t.user_id
+     LEFT JOIN accounts ta ON ta.id = t.transfer_account_id AND ta.user_id = t.user_id
      WHERE t.id = $1 AND t.user_id = $2`,
     [id, uid],
   );
@@ -370,6 +376,8 @@ export async function classifyTransaction(
   const t = await txRow(tx, uid, args.txId);
   const log = new LogWriter(tx, uid);
   await log.set(t, key, 'user');
+  const kind = (await tx.query<{ kind: string }>('SELECT kind FROM categories WHERE key = $1 AND user_id = $2', [key, uid])).rows[0]?.kind;
+  if (kind !== 'transfer') await unlinkTransfer(tx, uid, t.id, true);
   let similar = 0;
   if (args.applySimilar) for (const r of await similarRows(tx, uid, t)) if (await log.set(r, key, 'user')) similar++;
   const rule = args.rule ? await applyNewRule(tx, uid, log, args.rule.pattern, key, args.rule.direction) : undefined;
@@ -479,7 +487,111 @@ export async function addManualTransaction(
 }
 
 export async function deleteTransaction(tx: Tx, uid: number, id: number): Promise<void> {
+  // A contrapartida criada automaticamente não faz sentido sozinha.
+  await tx.query('DELETE FROM transactions WHERE mirror = 1 AND transfer_peer_id = $1 AND user_id = $2', [id, uid]);
   await tx.query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [id, uid]);
+}
+
+// ---------------- Transferências entre contas ----------------
+
+/** Desfaz a ligação com a outra conta (apaga a contrapartida criada automaticamente). */
+async function unlinkTransfer(tx: Tx, uid: number, id: number, clearAccount: boolean): Promise<void> {
+  const t = (await tx.query<{ transfer_peer_id: number | null }>('SELECT transfer_peer_id FROM transactions WHERE id = $1 AND user_id = $2', [id, uid])).rows[0];
+  if (t?.transfer_peer_id) {
+    const peer = (await tx.query<{ id: number; mirror: number }>('SELECT id, mirror FROM transactions WHERE id = $1 AND user_id = $2', [t.transfer_peer_id, uid])).rows[0];
+    if (peer?.mirror) await tx.query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [peer.id, uid]);
+    else if (peer) await tx.query('UPDATE transactions SET transfer_peer_id = NULL, transfer_account_id = NULL WHERE id = $1 AND user_id = $2', [peer.id, uid]);
+  }
+  await tx.query(
+    `UPDATE transactions SET transfer_peer_id = NULL${clearAccount ? ', transfer_account_id = NULL' : ''} WHERE id = $1 AND user_id = $2`, [id, uid],
+  );
+}
+
+async function linkPair(
+  tx: Tx, uid: number, a: { id: number; account_id: number }, b: { id: number; account_id: number }, categoryKey: string, source: string,
+): Promise<void> {
+  for (const [x, y] of [[a, b], [b, a]]) {
+    await tx.query(
+      `UPDATE transactions SET transfer_peer_id = $1, transfer_account_id = $2, category_key = $3, category_source = $4
+       WHERE id = $5 AND user_id = $6`,
+      [y.id, y.account_id, categoryKey, source, x.id, uid],
+    );
+  }
+}
+
+/**
+ * Marca um lançamento como transferência de/para outra conta. Procura o
+ * lançamento correspondente já importado na outra conta (valor oposto, data
+ * próxima); se não houver e `createMirror`, cria a contrapartida.
+ */
+export async function setTransfer(tx: Tx, uid: number, txId: number, input: TransferInput): Promise<TransferResult> {
+  const t = (await tx.query<{ id: number; account_id: number; account_type: string; account_name: string; date: string; amount_cents: number; category_key: string | null }>(
+    `SELECT t.id, t.account_id, a.type AS account_type, a.name AS account_name, t.date, t.amount_cents, t.category_key
+     FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.user_id = t.user_id WHERE t.id = $1 AND t.user_id = $2`, [txId, uid],
+  )).rows[0];
+  if (!t) throw new NotFoundError('Lançamento');
+  await unlinkTransfer(tx, uid, t.id, true);
+  if (input.accountId === null) return { peerId: null, matched: false, created: false };
+  if (input.accountId === t.account_id) throw new ValidationError('Escolha uma conta diferente da conta do lançamento.');
+  const other = (await tx.query<{ id: number; type: string; name: string }>('SELECT id, type, name FROM accounts WHERE id = $1 AND user_id = $2', [input.accountId, uid])).rows[0];
+  if (!other) throw new NotFoundError('Conta');
+  const requested = input.categoryKey
+    ? (await tx.query<{ key: string }>("SELECT key FROM categories WHERE key = $1 AND user_id = $2 AND kind = 'transfer'", [input.categoryKey, uid])).rows[0]
+    : undefined;
+  const categoryKey = requested?.key ?? transferCategoryFor(t.account_type, other.type, [t.category_key]);
+  const validKey = await validCategory(tx, uid, categoryKey);
+
+  const peer = (await tx.query<{ id: number; account_id: number }>(
+    `SELECT id, account_id FROM transactions
+     WHERE user_id = $1 AND account_id = $2 AND amount_cents = $3 AND transfer_peer_id IS NULL AND id <> $4
+       AND ABS(date::date - $5::date) <= $6
+     ORDER BY ABS(date::date - $5::date), id LIMIT 1`,
+    [uid, other.id, -t.amount_cents, t.id, t.date, TRANSFER_WINDOW_DAYS],
+  )).rows[0];
+  if (peer) {
+    await linkPair(tx, uid, t, peer, validKey ?? categoryKey, 'user');
+    return { peerId: peer.id, matched: true, created: false };
+  }
+  if (input.createMirror) {
+    const desc = mirrorDescription(t.amount_cents, t.account_name);
+    const id = (await tx.query<{ id: number }>(
+      `INSERT INTO transactions (user_id, account_id, date, description, amount_cents, category_key, category_source, description_key, dedupe_key, mirror)
+       VALUES ($1, $2, $3, $4, $5, $6, 'user', $7, $8, 1) RETURNING id`,
+      [uid, other.id, t.date, desc, -t.amount_cents, validKey, descriptionKey(desc), `transfer:${t.id}:${Date.now()}`],
+    )).rows[0].id;
+    await linkPair(tx, uid, t, { id, account_id: other.id }, validKey ?? categoryKey, 'user');
+    return { peerId: id, matched: false, created: true };
+  }
+  await tx.query(
+    "UPDATE transactions SET transfer_account_id = $1, category_key = $2, category_source = 'user' WHERE id = $3 AND user_id = $4",
+    [other.id, validKey, t.id, uid],
+  );
+  return { peerId: null, matched: false, created: false };
+}
+
+/** Liga automaticamente saídas e entradas entre as contas do usuário. */
+async function linkDetectedTransfers(tx: Tx, uid: number): Promise<number> {
+  const rows = (await tx.query<TransferCandidate>(
+    `SELECT t.id, t.account_id, a.type AS account_type, t.date, t.amount_cents, t.description, t.memo,
+            t.category_key, c.kind AS category_kind, t.category_source
+     FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.user_id = t.user_id
+     LEFT JOIN categories c ON c.key = t.category_key AND c.user_id = t.user_id
+     WHERE t.user_id = $1 AND t.transfer_peer_id IS NULL AND t.mirror = 0`, [uid],
+  )).rows;
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const pairs = findTransferPairs(rows);
+  for (const p of pairs) {
+    const o = byId.get(p.outId)!;
+    const i = byId.get(p.inId)!;
+    const key = (await validCategory(tx, uid, p.categoryKey)) ?? p.categoryKey;
+    await linkPair(tx, uid, o, i, key, o.category_source === 'user' || i.category_source === 'user' ? 'user' : 'rule');
+  }
+  return pairs.length;
+}
+
+/** Procura transferências entre contas em todos os lançamentos já importados. */
+export async function detectTransfers(tx: Tx, uid: number): Promise<number> {
+  return linkDetectedTransfers(tx, uid);
 }
 
 // ---------------- Importação ----------------
@@ -501,7 +613,7 @@ export async function prepareImport(tx: Tx, uid: number, accountId: number, st: 
 export async function commitImport(
   tx: Tx, uid: number,
   args: { accountId: number; fileName: string; format: string; candidates: ImportCandidate[] },
-): Promise<{ imported: number; skipped: number }> {
+): Promise<{ imported: number; skipped: number; transfers: number }> {
   await ensureAccount(tx, uid, args.accountId);
   const validKeys = new Set((await tx.query<{ key: string }>('SELECT key FROM categories WHERE user_id = $1', [uid])).rows.map((r) => r.key));
   const imp = (await tx.query<{ id: number }>(
@@ -510,8 +622,27 @@ export async function commitImport(
   )).rows[0].id;
   let imported = 0;
   let skipped = 0;
+  let transfers = 0;
   for (const c of args.candidates) {
     if (!c.selected) { skipped++; continue; }
+    // Contrapartida de transferência lançada antes: o extrato a substitui (sem duplicar).
+    const mirror = (await tx.query<{ id: number }>(
+      `SELECT id FROM transactions WHERE user_id = $1 AND account_id = $2 AND mirror = 1 AND amount_cents = $3
+         AND ABS(date::date - $4::date) <= $5
+         AND NOT EXISTS (SELECT 1 FROM transactions d WHERE d.account_id = $2 AND d.dedupe_key = $6)
+       ORDER BY ABS(date::date - $4::date), id LIMIT 1`,
+      [uid, args.accountId, c.amountCents, c.date, TRANSFER_WINDOW_DAYS, c.dedupeKey],
+    )).rows[0];
+    if (mirror) {
+      await tx.query(
+        `UPDATE transactions SET date = $1, description = $2, memo = $3, description_key = $4, dedupe_key = $5, import_id = $6, mirror = 0
+         WHERE id = $7 AND user_id = $8`,
+        [c.date, c.description, c.memo ?? null, descriptionKey(c.description), c.dedupeKey, imp, mirror.id, uid],
+      );
+      imported++;
+      transfers++;
+      continue;
+    }
     const r = await tx.query(
       `INSERT INTO transactions
          (user_id, account_id, date, description, memo, amount_cents, category_key, category_source, description_key, dedupe_key, import_id)
@@ -523,7 +654,8 @@ export async function commitImport(
     if (r.rowCount) imported++; else skipped++;
   }
   await tx.query('UPDATE imports SET imported_count = $1, skipped_count = $2 WHERE id = $3 AND user_id = $4', [imported, skipped, imp, uid]);
-  return { imported, skipped };
+  transfers += await linkDetectedTransfers(tx, uid);
+  return { imported, skipped, transfers };
 }
 
 export async function listImports(tx: Tx, uid: number): Promise<ImportRecord[]> {
@@ -538,6 +670,10 @@ export async function listImports(tx: Tx, uid: number): Promise<ImportRecord[]> 
 }
 
 export async function undoImport(tx: Tx, uid: number, importId: number): Promise<void> {
+  await tx.query(
+    `DELETE FROM transactions WHERE user_id = $2 AND mirror = 1
+       AND transfer_peer_id IN (SELECT id FROM transactions WHERE import_id = $1 AND user_id = $2)`, [importId, uid],
+  );
   await tx.query('DELETE FROM transactions WHERE import_id = $1 AND user_id = $2', [importId, uid]);
   await tx.query('DELETE FROM imports WHERE id = $1 AND user_id = $2', [importId, uid]);
 }
@@ -597,43 +733,43 @@ export async function exportCsv(tx: Tx, uid: number): Promise<string> {
 
 // ---------------- Objetivos ----------------
 
-const GOAL_COLS = `g.id, g.name, g.template, g.icon, g.color, g.target_cents, g.deadline,
-  to_char(g.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS created_at,
-  COALESCE(SUM(e.amount_cents), 0)::bigint AS saved_cents,
-  COALESCE(SUM(e.amount_cents) FILTER (WHERE e.date >= $2 AND e.initial = 0), 0)::bigint AS recent_cents`;
+// Com conta vinculada, as movimentações dela desde a criação do sonho contam como depósitos.
+const GOAL_DAY = "to_char(g.created_at AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD')";
+const GOAL_SQL = `SELECT g.id, g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.account_id, a.name AS account_name,
+  ${GOAL_DAY} AS created_at,
+  (COALESCE((SELECT SUM(e.amount_cents) FROM goal_entries e WHERE e.goal_id = g.id AND e.user_id = g.user_id), 0)
+   + COALESCE((SELECT SUM(t.amount_cents) FROM transactions t
+               WHERE t.user_id = g.user_id AND t.account_id = g.account_id AND t.date >= ${GOAL_DAY}), 0))::bigint AS saved_cents,
+  (COALESCE((SELECT SUM(e.amount_cents) FROM goal_entries e WHERE e.goal_id = g.id AND e.user_id = g.user_id AND e.date >= $2 AND e.initial = 0), 0)
+   + COALESCE((SELECT SUM(t.amount_cents) FROM transactions t
+               WHERE t.user_id = g.user_id AND t.account_id = g.account_id AND t.date >= ${GOAL_DAY} AND t.date >= $2), 0))::bigint AS recent_cents
+  FROM goals g LEFT JOIN accounts a ON a.id = g.account_id AND a.user_id = g.user_id`;
 
 export async function listGoals(tx: Tx, uid: number, since: string): Promise<Goal[]> {
-  const r = await tx.query<Goal>(
-    `SELECT ${GOAL_COLS} FROM goals g LEFT JOIN goal_entries e ON e.goal_id = g.id AND e.user_id = g.user_id
-     WHERE g.user_id = $1 GROUP BY g.id ORDER BY g.deadline NULLS LAST, g.id`,
-    [uid, since],
-  );
+  const r = await tx.query<Goal>(`${GOAL_SQL} WHERE g.user_id = $1 ORDER BY g.deadline NULLS LAST, g.id`, [uid, since]);
   return r.rows;
 }
 
 export async function getGoal(tx: Tx, uid: number, id: number, since: string): Promise<Goal | null> {
-  const r = await tx.query<Goal>(
-    `SELECT ${GOAL_COLS} FROM goals g LEFT JOIN goal_entries e ON e.goal_id = g.id AND e.user_id = g.user_id
-     WHERE g.user_id = $1 AND g.id = $3 GROUP BY g.id`,
-    [uid, since, id],
-  );
+  const r = await tx.query<Goal>(`${GOAL_SQL} WHERE g.user_id = $1 AND g.id = $3`, [uid, since, id]);
   return r.rows[0] ?? null;
 }
 
 export async function saveGoal(tx: Tx, uid: number, g: GoalInput): Promise<number> {
+  if (g.account_id) await ensureAccount(tx, uid, g.account_id);
   if (g.id) {
     const r = await tx.query(
-      `UPDATE goals SET name = $1, template = $2, icon = $3, color = $4, target_cents = $5, deadline = $6
+      `UPDATE goals SET name = $1, template = $2, icon = $3, color = $4, target_cents = $5, deadline = $6, account_id = $9
        WHERE id = $7 AND user_id = $8`,
-      [g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.id, uid],
+      [g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.id, uid, g.account_id ?? null],
     );
     if (!r.rowCount) throw new NotFoundError('Objetivo');
     return g.id;
   }
   const r = await tx.query<{ id: number }>(
-    `INSERT INTO goals (user_id, name, template, icon, color, target_cents, deadline)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [uid, g.name, g.template, g.icon, g.color, g.target_cents, g.deadline],
+    `INSERT INTO goals (user_id, name, template, icon, color, target_cents, deadline, account_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [uid, g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.account_id ?? null],
   );
   return r.rows[0].id;
 }
@@ -644,7 +780,12 @@ export async function deleteGoal(tx: Tx, uid: number, id: number): Promise<void>
 
 export async function listGoalEntries(tx: Tx, uid: number, goalId: number): Promise<GoalEntry[]> {
   const r = await tx.query<GoalEntry>(
-    'SELECT id, goal_id, date, amount_cents, note FROM goal_entries WHERE goal_id = $1 AND user_id = $2 ORDER BY date DESC, id DESC',
+    `SELECT id, goal_id, date, amount_cents, note, 0 AS auto FROM goal_entries WHERE goal_id = $1 AND user_id = $2
+     UNION ALL
+     SELECT t.id, g.id, t.date, t.amount_cents, t.description, 1 FROM goals g
+       JOIN transactions t ON t.account_id = g.account_id AND t.user_id = g.user_id
+     WHERE g.id = $1 AND g.user_id = $2 AND t.date >= ${GOAL_DAY}
+     ORDER BY date DESC, id DESC`,
     [goalId, uid],
   );
   return r.rows;

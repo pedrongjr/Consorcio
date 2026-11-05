@@ -16,7 +16,7 @@ import { Button, Card, Chip, colors, currentMonth, Icon, Money, MonthSwitcher, P
  */
 export default function Planning() {
   const params = useLocalSearchParams<{ view?: string }>();
-  const [view, setView] = useState<'budgets' | 'goals'>(params.view === 'goals' ? 'goals' : 'budgets');
+  const [view, setView] = useState<'budgets' | 'goals'>(params.view === 'budgets' ? 'budgets' : 'goals');
   // Vindo do Resumo com ?view=goals: ajusta durante a renderização.
   const [lastParam, setLastParam] = useState(params.view);
   if (params.view !== lastParam) {
@@ -25,8 +25,8 @@ export default function Planning() {
   }
   const tabs = (
     <View style={{ flexDirection: 'row', gap: 8 }}>
+      <Chip label="Sonhos" active={view === 'goals'} onPress={() => setView('goals')} />
       <Chip label="Orçamentos" active={view === 'budgets'} onPress={() => setView('budgets')} />
-      <Chip label="Objetivos" active={view === 'goals'} onPress={() => setView('goals')} />
     </View>
   );
   if (view === 'goals') {

@@ -478,6 +478,81 @@ for (const asOwner of [false, true]) suite(`API web (${asOwner ? 'dono comum' : 
       const bal = (await F.c.rpc<{ balance_cents: unknown }[]>('listAccounts')).result[0].balance_cents;
       expect(bal).toBe(-12345 + 500000 - 3990);
     });
+
+    it('transferências entre contas: detecção, contrapartida sem duplicar e isolamento', async () => {
+      const G = new Client();
+      expect((await G.post('/api/auth/register', { email: 'gabi@exemplo.com', password: STRONG, name: 'G' })).status).toBe(201);
+      const acc = async (name: string, type: string) => (await G.rpc<number>('saveAccount', { name, type })).result;
+      const caixa = await acc('Caixa', 'checking');
+      const nu = await acc('Nubank', 'checking');
+      const poup = await acc('Poupança', 'savings');
+      const imp = async (accountId: number, transactions: { date: string; description: string; amountCents: number }[]) => {
+        const candidates = (await G.rpc('prepareImport', accountId, { format: 'csv', warnings: [], transactions })).result;
+        return (await G.rpc<{ imported: number; transfers: number }>('commitImport', { accountId, fileName: 'x.csv', format: 'csv', candidates })).result;
+      };
+      await imp(caixa, [
+        { date: '2026-10-20', description: 'DEB PIX CHAVE FULANO DE TAL', amountCents: -460000 },
+        { date: '2026-10-21', description: 'APLICACAO POUPANCA', amountCents: -10000 },
+        { date: '2026-10-22', description: 'MERCADO BOM PRECO', amountCents: -5000 },
+      ]);
+      const r = await imp(nu, [
+        { date: '2026-10-20', description: 'TRANSFERENCIA RECEBIDA FULANO DE TAL', amountCents: 460000 },
+        { date: '2026-10-22', description: 'PADARIA', amountCents: -5000 },
+      ]);
+      expect(r.transfers).toBe(1);
+      type T = { id: number; account_id: number; description: string; amount_cents: number; category_key: string; transfer_account_id: number | null; transfer_account_name: string | null; transfer_peer_id: number | null; mirror: number };
+      const all = async () => (await G.rpc<T[]>('listTransactions', {})).result;
+      let txs = await all();
+      const pixOut = txs.find((t) => t.description.startsWith('DEB PIX'))!;
+      const pixIn = txs.find((t) => t.description.startsWith('TRANSFERENCIA'))!;
+      expect(pixOut).toMatchObject({ category_key: 'transferencias', transfer_account_id: nu, transfer_account_name: 'Nubank', transfer_peer_id: pixIn.id });
+      expect(pixIn).toMatchObject({ category_key: 'transferencias', transfer_account_id: caixa, transfer_peer_id: pixOut.id });
+      // Valores iguais sem cara de transferência (mercado x padaria) não viram par.
+      expect(txs.find((t) => t.description === 'PADARIA')!.transfer_peer_id).toBeNull();
+
+      // Filtro com várias contas
+      const onlyNu = (await G.rpc<T[]>('listTransactions', { accountIds: [nu] })).result;
+      expect(onlyNu.map((t) => t.account_id)).toEqual([nu, nu]);
+      expect((await G.rpc<T[]>('listTransactions', { accountIds: [nu, caixa] })).result).toHaveLength(5);
+
+      // De/para manual com contrapartida (a poupança ainda não foi importada)
+      const aplic = txs.find((t) => t.description === 'APLICACAO POUPANCA')!;
+      const st = await G.rpc<{ created: boolean; matched: boolean; peerId: number }>('setTransfer', aplic.id, { accountId: poup, createMirror: true });
+      expect(st.result).toMatchObject({ created: true, matched: false });
+      txs = await all();
+      const mirror = txs.find((t) => t.id === st.result.peerId)!;
+      expect(mirror).toMatchObject({ account_id: poup, amount_cents: 10000, mirror: 1, description: 'Transferência de Caixa', transfer_peer_id: aplic.id });
+      // Importar o extrato da poupança substitui a contrapartida em vez de duplicar.
+      const r2 = await imp(poup, [{ date: '2026-10-23', description: 'CREDITO APLICACAO', amountCents: 10000 }]);
+      expect(r2.imported).toBe(1);
+      const poupTx = (await G.rpc<T[]>('listTransactions', { accountIds: [poup] })).result;
+      expect(poupTx).toHaveLength(1);
+      expect(poupTx[0]).toMatchObject({ id: mirror.id, description: 'CREDITO APLICACAO', mirror: 0, transfer_peer_id: aplic.id });
+
+      // Sonho vinculado à poupança: movimentações a partir de hoje contam como depósito.
+      const today = new Date().toISOString().slice(0, 10);
+      await G.rpc('addManualTransaction', { accountId: poup, date: today, description: 'DEPOSITO', amountCents: 7000, categoryKey: null });
+      const gid = (await G.rpc<number>('saveGoal', { name: 'Viagem', template: 'viagem', icon: 'airplane', color: '#E5484D', target_cents: 100000, deadline: null, account_id: poup })).result;
+      expect((await G.rpc<{ saved_cents: number; account_name: string }>('getGoal', gid, '2020-01-01')).result).toMatchObject({ saved_cents: 7000, account_name: 'Poupança' });
+      expect((await G.rpc<{ auto: number; amount_cents: number }[]>('listGoalEntries', gid)).result).toEqual([expect.objectContaining({ auto: 1, amount_cents: 7000 })]);
+
+      // Outro usuário não liga transferência nem sonho às contas/lançamentos de G.
+      const H = await registerWithData('hugo@exemplo.com', 'HUGO');
+      expect((await H.c.rpc('setTransfer', pixOut.id, { accountId: H.accountId })).status).toBe(404);
+      expect((await H.c.rpc('setTransfer', H.txIds[0], { accountId: caixa })).status).toBe(404);
+      expect((await H.c.rpc('saveGoal', { name: 'X', template: 'outro', icon: 'star', color: '#74B816', target_cents: 100, deadline: null, account_id: poup })).status).toBe(404);
+      expect((await raw.query('SELECT count(*)::int AS n FROM transactions WHERE user_id <> (SELECT user_id FROM accounts WHERE id = $1) AND (transfer_account_id = $1 OR transfer_peer_id = $2)', [caixa, pixOut.id])).rows[0].n).toBe(0);
+
+      // Reclassificar como gasto desfaz o par; excluir apaga a contrapartida criada.
+      await G.rpc('classifyTransaction', { txId: pixOut.id, categoryKey: 'lazer', applySimilar: false });
+      txs = await all();
+      expect(txs.find((t) => t.id === pixIn.id)!.transfer_peer_id).toBeNull();
+      const merc = txs.find((t) => t.description === 'MERCADO BOM PRECO')!;
+      const st2 = await G.rpc<{ peerId: number }>('setTransfer', merc.id, { accountId: nu, createMirror: true });
+      expect(st2.result.peerId).toBeTruthy();
+      await G.rpc('deleteTransaction', merc.id);
+      expect((await all()).some((t) => t.id === st2.result.peerId)).toBe(false);
+    });
   });
 
   describe('limite de tentativas', () => {

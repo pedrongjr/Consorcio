@@ -8,6 +8,7 @@ import { addGoalEntry, deleteGoal, deleteGoalEntry, getGoal, listGoalEntries } f
 import { showAlert } from '../../lib/dialog';
 import { describePlan, paceOf, planFor, planningContext } from '../../lib/planning';
 import { useAsyncData } from '../../lib/useAsyncData';
+import { HowToReachCard } from '../../components/HowToReach';
 import { Button, Card, Chip, colors, Field, Icon, Money, ProgressBar, SectionTitle, styles, todayIso } from '../../components/ui';
 
 export default function GoalDetail() {
@@ -30,7 +31,7 @@ export default function GoalDetail() {
   if (!g) {
     return (
       <View style={[styles.screen, styles.content]}>
-        <Text style={styles.muted}>Objetivo não encontrado.</Text>
+        <Text style={styles.muted}>Sonho não encontrado.</Text>
       </View>
     );
   }
@@ -61,7 +62,7 @@ export default function GoalDetail() {
   }
 
   function remove() {
-    showAlert(`Excluir “${g!.name}”?`, 'O objetivo e o histórico de depósitos serão apagados. Seus lançamentos não mudam.', [
+    showAlert(`Excluir “${g!.name}”?`, 'O sonho e o histórico de depósitos serão apagados. Seus lançamentos não mudam.', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: async () => { await deleteGoal(db, goalId); router.back(); } },
     ]);
@@ -73,7 +74,7 @@ export default function GoalDetail() {
         options={{
           title: g.name,
           headerRight: () => (
-            <Pressable accessibilityLabel="Editar objetivo" hitSlop={10} onPress={() => router.push({ pathname: '/goal/new', params: { id: String(g.id) } })}>
+            <Pressable accessibilityLabel="Editar sonho" hitSlop={10} onPress={() => router.push({ pathname: '/goal/new', params: { id: String(g.id) } })}>
               <Icon name="create-outline" color={colors.primary} />
             </Pressable>
           ),
@@ -95,6 +96,9 @@ export default function GoalDetail() {
           <Text style={styles.muted}>Meta: {formatBRL(g.target_cents)}</Text>
           <Text style={styles.muted}>Faltam: {formatBRL(plan.remainingCents)}</Text>
         </View>
+        {g.account_name ? (
+          <Text style={[styles.muted, { marginTop: 4 }]}>Conta vinculada: {g.account_name} (as movimentações dela contam sozinhas)</Text>
+        ) : null}
         <Text style={[styles.muted, { marginTop: 4 }]}>
           Prazo: {g.deadline ? monthLabel(g.deadline, true) : 'sem prazo'}
           {plan.monthsLeft ? ` (${plan.monthsLeft} ${plan.monthsLeft === 1 ? 'mês' : 'meses'})` : ''}
@@ -124,6 +128,10 @@ export default function GoalDetail() {
         <Text style={{ color: d.color }}>{d.text}</Text>
       </Card>
 
+      {plan.status !== 'done' && plan.monthlyNeededCents ? (
+        <HowToReachCard monthlyCents={plan.monthlyNeededCents} ctx={data.ctx} accountName={g.account_name} onBudgets={reload} />
+      ) : null}
+
       {plan.status !== 'done' || g.saved_cents > 0 ? (
         <Card>
           <SectionTitle>Registrar</SectionTitle>
@@ -142,18 +150,22 @@ export default function GoalDetail() {
         {data.entries.length ? data.entries.map((e) => (
           <View key={e.id} style={[styles.row, { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.text }}>{formatDateBR(e.date)}</Text>
+              <Text style={{ color: colors.text }}>{formatDateBR(e.date)}{e.auto ? ` · ${g.account_name ?? 'conta vinculada'}` : ''}</Text>
               {e.note ? <Text style={styles.muted} numberOfLines={2}>{e.note}</Text> : null}
             </View>
             <Money cents={e.amount_cents} />
-            <Pressable accessibilityLabel="Excluir registro" hitSlop={10} onPress={() => removeEntry(e.id)}>
-              <Icon name="trash-outline" size={18} color={colors.muted} />
-            </Pressable>
+            {e.auto ? (
+              <Icon name="sync-outline" size={18} color={colors.muted} />
+            ) : (
+              <Pressable accessibilityLabel="Excluir registro" hitSlop={10} onPress={() => removeEntry(e.id)}>
+                <Icon name="trash-outline" size={18} color={colors.muted} />
+              </Pressable>
+            )}
           </View>
-        )) : <Text style={styles.muted}>Nenhum depósito ainda. Registre aqui sempre que guardar dinheiro para este objetivo.</Text>}
+        )) : <Text style={styles.muted}>Nenhum depósito ainda. Registre aqui sempre que guardar dinheiro para este sonho, ou vincule uma conta (editar) para contar sozinho.</Text>}
       </Card>
 
-      <Button title="Excluir objetivo" variant="danger" icon="trash" onPress={remove} />
+      <Button title="Excluir sonho" variant="danger" icon="trash" onPress={remove} />
     </ScrollView>
   );
 }

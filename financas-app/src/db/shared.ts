@@ -45,6 +45,31 @@ export interface Transaction {
   amount_cents: number;
   category_key: string | null;
   category_source: string;
+  /** Transferência: a outra conta (destino se saiu, origem se entrou). */
+  transfer_account_id: number | null;
+  transfer_account_name: string | null;
+  /** Lançamento correspondente na outra conta. */
+  transfer_peer_id: number | null;
+  /** 1 = criado automaticamente como contrapartida de uma transferência. */
+  mirror: number;
+}
+
+export interface TransferInput {
+  /** Outra conta da transferência; `null` desfaz a ligação. */
+  accountId: number | null;
+  /** Categoria de transferência (padrão: conforme o tipo das contas). */
+  categoryKey?: string | null;
+  /** Sem lançamento correspondente na outra conta: cria um (como no Minhas Finanças). */
+  createMirror?: boolean;
+}
+
+export interface TransferResult {
+  /** Lançamento ligado na outra conta (encontrado ou criado). */
+  peerId: number | null;
+  /** Encontrou um lançamento já importado na outra conta. */
+  matched: boolean;
+  /** Criou um lançamento na outra conta. */
+  created: boolean;
 }
 
 export interface Rule {
@@ -65,6 +90,9 @@ export interface Goal {
   /** Mês-limite YYYY-MM (inclusive) ou null. */
   deadline: string | null;
   created_at: string;
+  /** Conta vinculada: as movimentações dela (desde a criação) contam como depósitos. */
+  account_id: number | null;
+  account_name: string | null;
   saved_cents: number;
   /** Guardado desde a data pedida em `listGoals` (para calcular o ritmo). */
   recent_cents: number;
@@ -77,6 +105,8 @@ export interface GoalEntry {
   date: string;
   amount_cents: number;
   note: string | null;
+  /** 1 = movimentação da conta vinculada (não pode ser excluída aqui). */
+  auto: number;
 }
 
 export interface GoalInput {
@@ -87,6 +117,7 @@ export interface GoalInput {
   color: string;
   target_cents: number;
   deadline: string | null;
+  account_id?: number | null;
 }
 
 export type ClassificationAction = 'manual' | 'similar' | 'rule' | 'reset';
@@ -174,6 +205,8 @@ export function categoryMap(cats: Category[]): Map<string, ReportCategory> {
 export interface TxFilter {
   month?: string; // YYYY-MM
   accountId?: number;
+  /** Várias contas (vazio ou ausente = todas). */
+  accountIds?: number[];
   categoryKey?: string; // inclui subcategorias
   search?: string;
   uncategorizedOnly?: boolean;

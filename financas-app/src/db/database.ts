@@ -2,7 +2,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { DEFAULT_CATEGORIES } from '../core/categories';
 
 export const DB_NAME = 'financas.db';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /** Cria/migra o banco local. Tudo fica só no aparelho do usuário. */
 export async function migrate(db: SQLiteDatabase): Promise<void> {
@@ -130,6 +130,16 @@ export async function migrate(db: SQLiteDatabase): Promise<void> {
         initial INTEGER NOT NULL DEFAULT 0          -- já estava guardado ao criar
       );
       CREATE INDEX IF NOT EXISTS idx_goal_entries_goal ON goal_entries(goal_id);
+    `);
+  }
+  if (current < 4) {
+    // Transferências entre contas (par de lançamentos) e conta vinculada ao sonho.
+    await db.execAsync(`
+      ALTER TABLE transactions ADD COLUMN transfer_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL;
+      ALTER TABLE transactions ADD COLUMN transfer_peer_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL;
+      ALTER TABLE transactions ADD COLUMN mirror INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_tx_peer ON transactions(transfer_peer_id);
+      ALTER TABLE goals ADD COLUMN account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL;
     `);
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);

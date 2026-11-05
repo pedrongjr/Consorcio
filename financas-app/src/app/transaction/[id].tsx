@@ -7,11 +7,11 @@ import { isGenericText, suggestRulePattern } from '../../core/classifier';
 import { formatDateBR } from '../../core/reports';
 import { RULE_TOO_GENERIC } from '../../db/shared';
 import {
-  classifyTransaction, deleteTransaction, getTransaction, listCategories, previewRule, previewSimilar, updateTransaction,
-  type Category, type RulePreview, type SimilarPreview, type Transaction,
+  classifyTransaction, deleteTransaction, getTransaction, listAccounts, listCategories, previewRule, previewSimilar, setTransfer, updateTransaction,
+  type AccountWithBalance, type Category, type RulePreview, type SimilarPreview, type Transaction,
 } from '../../db/repo';
 import { CategoryPicker } from '../../components/CategoryPicker';
-import { Button, Card, CategoryBadge, colors, Field, Money, styles } from '../../components/ui';
+import { Button, Card, CategoryBadge, Chip, colors, Field, Money, styles } from '../../components/ui';
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'definida por você', rule: 'classificação automática', history: 'aprendida de lançamentos anteriores', none: 'não identificada',
@@ -32,12 +32,20 @@ export default function TransactionDetail() {
   const [similar, setSimilar] = useState<SimilarPreview | null>(null);
   const [rulePreview, setRulePreview] = useState<{ pattern: string; data: RulePreview } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
+  const [otherAccount, setOtherAccount] = useState<number | null>(null);
+  const [createMirror, setCreateMirror] = useState(true);
+  const [peer, setPeer] = useState<Transaction | null>(null);
 
   useEffect(() => {
     (async () => {
-      const [t, c, sim] = await Promise.all([getTransaction(db, Number(id)), listCategories(db), previewSimilar(db, Number(id)).catch(() => null)]);
-      setTx(t); setCats(c); setSimilar(sim);
+      const [t, c, sim, accs] = await Promise.all([
+        getTransaction(db, Number(id)), listCategories(db), previewSimilar(db, Number(id)).catch(() => null), listAccounts(db),
+      ]);
+      setTx(t); setCats(c); setSimilar(sim); setAccounts(accs);
+      if (t?.transfer_peer_id) setPeer(await getTransaction(db, t.transfer_peer_id).catch(() => null));
       if (t) {
+        setOtherAccount(t.transfer_account_id ?? null);
         setCategoryKey(t.category_key);
         setNotes(t.notes ?? '');
         setDescription(t.description);
@@ -61,6 +69,9 @@ export default function TransactionDetail() {
   if (!tx) return <View style={styles.screen} />;
   const cat = cats.find((c) => c.key === categoryKey);
   const categoryChanged = categoryKey !== tx.category_key;
+  const isTransfer = cat?.kind === 'transfer';
+  const outgoing = tx.amount_cents < 0;
+  const transferChanged = isTransfer && otherAccount !== (tx.transfer_account_id ?? null);
 
   const ruleGeneric = createRule && isGenericText(pattern);
   const preview = rulePreview && rulePreview.pattern === pattern.trim() ? rulePreview.data : null;
@@ -89,6 +100,12 @@ export default function TransactionDetail() {
             (r.byRule ? ` ${r.byRule} lançamento(s) já importados foram reclassificados por ela.` : ' Será usada nas próximas importações.'));
         }
         if (msgs.length) msgs.push('Se algo saiu errado, desfaça em Mais › Histórico de classificações.');
+      }
+      if (transferChanged) {
+        const r = await setTransfer(db, tx.id, { accountId: otherAccount, categoryKey, createMirror });
+        const name = accounts.find((a) => a.id === otherAccount)?.name;
+        if (r.matched) msgs.push(`Ligado ao lançamento correspondente já importado em ${name}.`);
+        else if (r.created) msgs.push(`Criado o lançamento correspondente em ${name}. Quando você importar o extrato de ${name}, ele será substituído pelo do banco (sem duplicar).`);
       }
       if (msgs.length) showAlert('Salvo', msgs.join('\n\n'));
       router.back();
@@ -167,6 +184,35 @@ export default function TransactionDetail() {
           </View>
         ) : null}
       </Card>
+
+      {isTransfer ? (
+        <Card>
+          <Text style={styles.label}>{outgoing ? `Saiu de ${tx.account_name} para` : `Entrou em ${tx.account_name} vindo de`}</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {accounts.filter((a) => a.id !== tx.account_id).map((a) => (
+              <Chip key={a.id} label={a.name} active={otherAccount === a.id} color={a.color}
+                onPress={() => setOtherAccount(otherAccount === a.id ? null : a.id)} />
+            ))}
+            {accounts.length < 2 ? <Text style={styles.muted}>Cadastre a outra conta em Mais › Contas para indicar de onde/para onde foi o dinheiro.</Text> : null}
+          </View>
+          {!transferChanged && peer ? (
+            <Text style={[styles.muted, { marginTop: 10 }]}>
+              Ligado a “{peer.description}” em {peer.account_name} ({formatDateBR(peer.date)}){peer.mirror ? ', criado pelo app' : ''}.
+            </Text>
+          ) : null}
+          {transferChanged && otherAccount ? (
+            <View style={[styles.row, { justifyContent: 'space-between', marginTop: 12 }]}>
+              <Text style={{ color: colors.text, flex: 1 }}>
+                Se não houver o lançamento correspondente em {accounts.find((a) => a.id === otherAccount)?.name}, criar
+              </Text>
+              <Switch value={createMirror} onValueChange={setCreateMirror} />
+            </View>
+          ) : null}
+          <Text style={[styles.muted, { marginTop: 8 }]}>
+            Transferências não contam como gasto nem receita. O app procura o mesmo valor (sinal oposto) na outra conta em até 4 dias.
+          </Text>
+        </Card>
+      ) : null}
 
       <Card>
         <Field label="Descrição" value={description} onChangeText={setDescription} />

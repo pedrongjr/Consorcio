@@ -22,7 +22,7 @@ export const GOAL_TEMPLATES: GoalTemplate[] = [
   { key: 'aposentadoria', name: 'Aposentar-se bem', icon: 'umbrella', color: '#1C7ED6', hint: 'Reserva para o futuro' },
   { key: 'dividas', name: 'Sair das dívidas', icon: 'trending-down', color: '#E8A400', hint: 'Valor total das dívidas a quitar' },
   { key: 'reserva', name: 'Reserva de emergência', icon: 'shield-checkmark', color: '#6741D9', hint: 'O ideal é de 6 a 12 meses de gastos' },
-  { key: 'outro', name: 'Outro objetivo', icon: 'star', color: '#74B816', hint: 'Qualquer outro sonho' },
+  { key: 'outro', name: 'Outro sonho', icon: 'star', color: '#74B816', hint: 'Qualquer outro objetivo' },
 ];
 
 export type GoalStatus =
@@ -107,4 +107,89 @@ export function goalPace(entries: { date: string; amountCents: number }[], curre
   if (!recent.length) return null;
   const total = recent.reduce((s, e) => s + e.amountCents, 0);
   return total > 0 ? Math.round(total / lookback) : null;
+}
+
+// ---------------- Como chegar lá: sugestões com base em receitas e despesas ----------------
+
+/**
+ * Quanto dá para reduzir, no máximo, em cada categoria de despesa (fração do
+ * gasto médio). Gastos essenciais (moradia, saúde, educação, impostos) ficam
+ * de fora; categorias criadas pelo usuário usam o padrão. "Outros gastos"
+ * também fica de fora: sem saber o que é (pode ser uma prestação), não dá
+ * para sugerir corte.
+ */
+export const CUT_RATES: Record<string, number> = {
+  lazer: 0.3, compras: 0.3, pessoal: 0.2, saques: 0.2, outros_gastos: 0,
+  alimentacao: 0.15, transporte: 0.1, servicos: 0.1, familia: 0.1,
+  moradia: 0, saude: 0, educacao: 0, taxas: 0,
+};
+const DEFAULT_CUT_RATE = 0.15;
+
+export interface CategoryAverage {
+  key: string;
+  name: string;
+  /** Gasto médio mensal (positivo). */
+  avgCents: number;
+  /** Orçamento atual da categoria, se houver. */
+  budgetCents?: number | null;
+  /** Subcategoria com mais gasto (para dar uma dica concreta). */
+  topChild?: string | null;
+}
+
+export interface CutSuggestion {
+  key: string;
+  name: string;
+  avgCents: number;
+  cutCents: number;
+  /** Novo limite mensal sugerido para o orçamento. */
+  limitCents: number;
+  /** Orçamento atual (não sugerimos afrouxar um limite menor). */
+  budgetCents?: number | null;
+  topChild?: string | null;
+}
+
+/** Arredonda para baixo em múltiplos de R$ 10. */
+const floor10 = (cents: number) => Math.floor(cents / 1000) * 1000;
+
+/**
+ * Cortes sugeridos para liberar `gapCents` por mês: começa pelas categorias
+ * com maior potencial de economia, sem passar do limite de cada uma.
+ */
+export function suggestCuts(categories: CategoryAverage[], gapCents: number): { cuts: CutSuggestion[]; totalCents: number; covers: boolean } {
+  if (gapCents <= 0) return { cuts: [], totalCents: 0, covers: true };
+  const options = categories
+    .map((c) => {
+      const rate = CUT_RATES[c.key] ?? DEFAULT_CUT_RATE;
+      const max = floor10(c.avgCents * rate);
+      return { c, max };
+    })
+    .filter((o) => o.max >= 1000)
+    .sort((a, b) => b.max - a.max);
+  const cuts: CutSuggestion[] = [];
+  let left = gapCents;
+  for (const { c, max } of options) {
+    if (left <= 0) break;
+    const cut = Math.min(max, Math.ceil(left / 1000) * 1000);
+    cuts.push({ key: c.key, name: c.name, avgCents: c.avgCents, cutCents: cut, limitCents: Math.max(0, c.avgCents - cut), budgetCents: c.budgetCents ?? null, topChild: c.topChild });
+    left -= cut;
+  }
+  const total = cuts.reduce((s, c) => s + c.cutCents, 0);
+  return { cuts, totalCents: total, covers: total >= gapCents };
+}
+
+/**
+ * Dia do mês em que costuma cair a maior receita (salário), para sugerir a
+ * transferência automática logo depois de receber. `null` sem histórico.
+ */
+export function payday(incomes: { date: string; amountCents: number }[]): number | null {
+  const biggest = new Map<string, { day: number; amount: number }>();
+  for (const i of incomes) {
+    if (i.amountCents <= 0) continue;
+    const m = i.date.slice(0, 7);
+    const cur = biggest.get(m);
+    if (!cur || i.amountCents > cur.amount) biggest.set(m, { day: Number(i.date.slice(8, 10)), amount: i.amountCents });
+  }
+  if (!biggest.size) return null;
+  const days = [...biggest.values()].map((b) => b.day).sort((a, b) => a - b);
+  return days[Math.floor((days.length - 1) / 2)];
 }

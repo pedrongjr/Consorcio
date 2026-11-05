@@ -8,23 +8,33 @@ export interface PdfTextItem {
 }
 
 /**
- * Agrupa os trechos de uma página em linhas visuais: mesma altura (y) com
- * tolerância, ordenados da esquerda para a direita, com espaço entre trechos
- * separados por uma lacuna.
+ * Agrupa os trechos de uma página em linhas visuais, ordenados da esquerda
+ * para a direita, com espaço entre trechos separados por uma lacuna.
+ *
+ * Dois trechos ficam na mesma linha quando as faixas verticais se sobrepõem
+ * em boa parte. Comparar só a base (y) falha no OCR: "6,00" tem a vírgula
+ * descendo abaixo da linha e o Tesseract devolve a caixa mais baixa que a
+ * do "D" ao lado, o que jogava valor e saldo para uma linha separada.
  */
 export function groupTextItems(items: PdfTextItem[]): string[] {
   const valid = items.filter((i) => i.str && i.str.trim());
   if (valid.length === 0) return [];
-  const sorted = [...valid].sort((a, b) => b.y - a.y || a.x - b.x);
-  const rows: PdfTextItem[][] = [];
+  const h = (i: PdfTextItem) => Math.max(1, i.height || 8);
+  const mid = (i: PdfTextItem) => i.y + h(i) / 2;
+  const sorted = [...valid].sort((a, b) => mid(b) - mid(a) || a.x - b.x);
+  const rows: { lo: number; hi: number; items: PdfTextItem[] }[] = [];
   for (const it of sorted) {
-    const tol = Math.max(2, (it.height || 8) * 0.45);
-    const row = rows.find((r) => Math.abs(r[0].y - it.y) <= tol);
-    if (row) row.push(it);
-    else rows.push([it]);
+    const lo = it.y;
+    const hi = it.y + h(it);
+    const row = rows.find((r) => {
+      const overlap = Math.min(hi, r.hi) - Math.max(lo, r.lo);
+      return overlap >= 0.5 * Math.min(hi - lo, r.hi - r.lo) || Math.abs(r.lo - lo) <= Math.max(2, h(it) * 0.2);
+    });
+    if (row) row.items.push(it);
+    else rows.push({ lo, hi, items: [it] });
   }
-  rows.sort((a, b) => b[0].y - a[0].y);
-  return rows.map((r) => {
+  rows.sort((a, b) => b.hi + b.lo - a.hi - a.lo);
+  return rows.map(({ items: r }) => {
     r.sort((a, b) => a.x - b.x);
     let line = '';
     let lastEnd = -Infinity;
@@ -53,7 +63,13 @@ export function cleanOcrLine(line: string): string {
     // "1 234,56" → "1234,56" (milhar separado por espaço)
     .replace(/(\d)\s(\d{3}[.,]\d{2})\b/g, '$1$2')
     // "10, 00" → "10,00"
-    .replace(/(\d)([.,])\s(\d{2})\b/g, '$1$2$3');
+    .replace(/(\d)([.,])\s(\d{2})\b/g, '$1$2$3')
+    // "4090,/13C" → "4090,13C" (barra de borda lida no meio do número)
+    .replace(/(\d,)[\/|](\d{2})/g, '$1$2')
+    // "9,59C" → "9,59 C" (indicador de crédito/débito colado, como na Caixa)
+    .replace(/(\d[.,]\d{2})([CD])(?=\s|$)/g, '$1 $2')
+    // "7429C" / "7.07045C" → vírgula perdida antes do indicador colado
+    .replace(/(?:^|\s)(\d[\d.]{2,9})([CD])(?=\s|$)/g, (m, n: string, cd: string) => m.replace(n + cd, `${n} ${cd}`));
   const toks = s
     .split(' ')
     // Menos lido como aspas ou travessão: "“35,00", "—35,00" → "-35,00"
@@ -68,6 +84,13 @@ export function cleanOcrLine(line: string): string {
     })
     // Traços e barras soltos costumam ser bordas de tabela lidas como texto.
     .filter((tok) => !/^[—–_|¦:;'"`~.,]+$/.test(tok));
+  // Vírgula perdida antes de C/D: "1200 D 9,59 C" → "12,00 D 9,59 C".
+  for (let i = 0; i < toks.length - 1; i++) {
+    if (/^\d[\d.]{2,9}$/.test(toks[i]) && !/^\d{1,3}(\.\d{3})+$/.test(toks[i]) && /^[CD]$/.test(toks[i + 1])) {
+      const d = toks[i].replace(/\./g, '');
+      toks[i] = `${d.slice(0, -2)},${d.slice(-2)}`;
+    }
+  }
   // Vírgula perdida: "-2780 3.001,93" → "-27,80 3.001,93" (só com sinal, para
   // não confundir com números de loja na descrição).
   for (let i = 0; i < toks.length - 1; i++) {

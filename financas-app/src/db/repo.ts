@@ -4,11 +4,12 @@ import { Classifier, displayDescription, isGenericText, similarityKey, type Hist
 import { DEFAULT_RULES } from '../core/categories';
 import { dedupeKeys } from '../core/importer';
 import { descriptionKey, normalizeText } from '../core/text';
+import { findTransferPairs, mirrorDescription, transferCategoryFor, TRANSFER_WINDOW_DAYS, type TransferCandidate } from '../core/transfers';
 import {
   RULE_TOO_GENERIC,
   type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
   type ClassifyResult, type Goal, type GoalEntry, type GoalInput, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
-  type TxFilter,
+  type TransferInput, type TransferResult, type TxFilter,
 } from './shared';
 
 export * from './shared';
@@ -153,6 +154,7 @@ export async function listTransactions(db: SQLiteDatabase, f: TxFilter = {}): Pr
   const params: (string | number)[] = [];
   if (f.month) { where.push('t.date LIKE ?'); params.push(`${f.month}-%`); }
   if (f.accountId) { where.push('t.account_id = ?'); params.push(f.accountId); }
+  if (f.accountIds?.length) { where.push(`t.account_id IN (${f.accountIds.map(() => '?').join(', ')})`); params.push(...f.accountIds); }
   if (f.categoryKey) {
     where.push('(t.category_key = ? OR t.category_key IN (SELECT key FROM categories WHERE parent = ?))');
     params.push(f.categoryKey, f.categoryKey);
@@ -165,8 +167,10 @@ export async function listTransactions(db: SQLiteDatabase, f: TxFilter = {}): Pr
   }
   return db.getAllAsync<Transaction>(
     `SELECT t.id, t.account_id, a.name AS account_name, t.date, t.description, t.memo, t.notes,
-            t.amount_cents, t.category_key, t.category_source
+            t.amount_cents, t.category_key, t.category_source,
+            t.transfer_account_id, ta.name AS transfer_account_name, t.transfer_peer_id, t.mirror
      FROM transactions t JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
      ORDER BY t.date DESC, t.id DESC LIMIT 2000`,
     params,
@@ -175,7 +179,9 @@ export async function listTransactions(db: SQLiteDatabase, f: TxFilter = {}): Pr
 
 export async function getTransaction(db: SQLiteDatabase, id: number): Promise<Transaction | null> {
   return db.getFirstAsync<Transaction>(
-    `SELECT t.*, a.name AS account_name FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`, id,
+    `SELECT t.*, a.name AS account_name, ta.name AS transfer_account_name
+     FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
+     WHERE t.id = ?`, id,
   );
 }
 
@@ -314,6 +320,9 @@ export async function classifyTransaction(
     const t = await txRow(db, args.txId);
     const log = new LogWriter(db);
     await log.set(t, args.categoryKey, 'user');
+    if ((await db.getFirstAsync<{ kind: string }>('SELECT kind FROM categories WHERE key = ?', args.categoryKey))?.kind !== 'transfer') {
+      await unlinkTransfer(db, t.id, true);
+    }
     let similar = 0;
     if (args.applySimilar) for (const r of await similarRows(db, t)) if (await log.set(r, args.categoryKey, 'user')) similar++;
     const rule = args.rule ? await applyNewRule(db, log, args.rule.pattern, args.categoryKey, args.rule.direction) : undefined;
@@ -415,7 +424,113 @@ export async function addManualTransaction(
 }
 
 export async function deleteTransaction(db: SQLiteDatabase, id: number): Promise<void> {
-  await db.runAsync('DELETE FROM transactions WHERE id = ?', id);
+  await db.withTransactionAsync(async () => {
+    // O lançamento criado como contrapartida não faz sentido sozinho.
+    await db.runAsync('DELETE FROM transactions WHERE mirror = 1 AND transfer_peer_id = ?', id);
+    await db.runAsync('DELETE FROM transactions WHERE id = ?', id);
+  });
+}
+
+// ---------------- Transferências entre contas ----------------
+
+/** Desfaz a ligação com a outra conta (apaga a contrapartida criada automaticamente). */
+async function unlinkTransfer(db: SQLiteDatabase, id: number, clearAccount: boolean): Promise<void> {
+  const t = await db.getFirstAsync<{ transfer_peer_id: number | null }>('SELECT transfer_peer_id FROM transactions WHERE id = ?', id);
+  if (t?.transfer_peer_id) {
+    const peer = await db.getFirstAsync<{ id: number; mirror: number }>('SELECT id, mirror FROM transactions WHERE id = ?', t.transfer_peer_id);
+    if (peer?.mirror) await db.runAsync('DELETE FROM transactions WHERE id = ?', peer.id);
+    else if (peer) await db.runAsync('UPDATE transactions SET transfer_peer_id = NULL, transfer_account_id = NULL WHERE id = ?', peer.id);
+  }
+  await db.runAsync(
+    `UPDATE transactions SET transfer_peer_id = NULL${clearAccount ? ', transfer_account_id = NULL' : ''} WHERE id = ?`, id,
+  );
+}
+
+async function linkPair(db: SQLiteDatabase, a: { id: number; account_id: number }, b: { id: number; account_id: number }, categoryKey: string, source: string) {
+  await db.runAsync(
+    'UPDATE transactions SET transfer_peer_id = ?, transfer_account_id = ?, category_key = ?, category_source = ? WHERE id = ?',
+    b.id, b.account_id, categoryKey, source, a.id,
+  );
+  await db.runAsync(
+    'UPDATE transactions SET transfer_peer_id = ?, transfer_account_id = ?, category_key = ?, category_source = ? WHERE id = ?',
+    a.id, a.account_id, categoryKey, source, b.id,
+  );
+}
+
+/**
+ * Marca um lançamento como transferência de/para outra conta. Procura o
+ * lançamento correspondente já importado na outra conta (valor oposto, data
+ * próxima); se não houver e `createMirror`, cria a contrapartida.
+ */
+export async function setTransfer(db: SQLiteDatabase, txId: number, input: TransferInput): Promise<TransferResult> {
+  let out: TransferResult = { peerId: null, matched: false, created: false };
+  await db.withTransactionAsync(async () => {
+    const t = await db.getFirstAsync<{ id: number; account_id: number; account_type: string; account_name: string; date: string; amount_cents: number; category_key: string | null }>(
+      `SELECT t.id, t.account_id, a.type AS account_type, a.name AS account_name, t.date, t.amount_cents, t.category_key
+       FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`, txId,
+    );
+    if (!t) throw new Error('Lançamento não encontrado.');
+    await unlinkTransfer(db, t.id, true);
+    if (input.accountId === null) return;
+    if (input.accountId === t.account_id) throw new Error('Escolha uma conta diferente da conta do lançamento.');
+    const other = await db.getFirstAsync<{ id: number; type: string; name: string }>('SELECT id, type, name FROM accounts WHERE id = ?', input.accountId);
+    if (!other) throw new Error('Conta não encontrada.');
+    const requested = input.categoryKey
+      ? await db.getFirstAsync<{ key: string }>("SELECT key FROM categories WHERE key = ? AND kind = 'transfer'", input.categoryKey)
+      : null;
+    const categoryKey = requested?.key ?? transferCategoryFor(t.account_type, other.type, [t.category_key]);
+
+    const peer = await db.getFirstAsync<{ id: number; account_id: number }>(
+      `SELECT id, account_id FROM transactions
+       WHERE account_id = ? AND amount_cents = ? AND transfer_peer_id IS NULL AND id <> ?
+         AND ABS(julianday(date) - julianday(?)) <= ?
+       ORDER BY ABS(julianday(date) - julianday(?)), id LIMIT 1`,
+      other.id, -t.amount_cents, t.id, t.date, TRANSFER_WINDOW_DAYS, t.date,
+    );
+    if (peer) {
+      await linkPair(db, t, peer, categoryKey, 'user');
+      out = { peerId: peer.id, matched: true, created: false };
+      return;
+    }
+    if (input.createMirror) {
+      const desc = mirrorDescription(t.amount_cents, t.account_name);
+      const r = await db.runAsync(
+        `INSERT INTO transactions (account_id, date, description, amount_cents, category_key, category_source, description_key, dedupe_key, mirror)
+         VALUES (?, ?, ?, ?, ?, 'user', ?, ?, 1)`,
+        other.id, t.date, desc, -t.amount_cents, categoryKey, descriptionKey(desc), `transfer:${t.id}:${Date.now()}`,
+      );
+      await linkPair(db, t, { id: r.lastInsertRowId, account_id: other.id }, categoryKey, 'user');
+      out = { peerId: r.lastInsertRowId, matched: false, created: true };
+      return;
+    }
+    await db.runAsync("UPDATE transactions SET transfer_account_id = ?, category_key = ?, category_source = 'user' WHERE id = ?", other.id, categoryKey, t.id);
+  });
+  return out;
+}
+
+/** Liga automaticamente saídas e entradas entre as contas do usuário. */
+async function linkDetectedTransfers(db: SQLiteDatabase): Promise<number> {
+  const rows = await db.getAllAsync<TransferCandidate>(
+    `SELECT t.id, t.account_id, a.type AS account_type, t.date, t.amount_cents, t.description, t.memo,
+            t.category_key, c.kind AS category_kind, t.category_source
+     FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN categories c ON c.key = t.category_key
+     WHERE t.transfer_peer_id IS NULL AND t.mirror = 0`,
+  );
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const pairs = findTransferPairs(rows);
+  for (const p of pairs) {
+    const o = byId.get(p.outId)!;
+    const i = byId.get(p.inId)!;
+    await linkPair(db, o, i, p.categoryKey, o.category_source === 'user' || i.category_source === 'user' ? 'user' : 'rule');
+  }
+  return pairs.length;
+}
+
+/** Procura transferências entre contas em todos os lançamentos já importados. */
+export async function detectTransfers(db: SQLiteDatabase): Promise<number> {
+  let n = 0;
+  await db.withTransactionAsync(async () => { n = await linkDetectedTransfers(db); });
+  return n;
 }
 
 // ---------------- Importação ----------------
@@ -438,13 +553,28 @@ export async function prepareImport(db: SQLiteDatabase, accountId: number, st: P
 export async function commitImport(
   db: SQLiteDatabase,
   args: { accountId: number; fileName: string; format: string; candidates: ImportCandidate[] },
-): Promise<{ imported: number; skipped: number }> {
+): Promise<{ imported: number; skipped: number; transfers: number }> {
   let imported = 0;
   let skipped = 0;
+  let transfers = 0;
   await db.withTransactionAsync(async () => {
     const imp = await db.runAsync('INSERT INTO imports (file_name, format, account_id) VALUES (?, ?, ?)', args.fileName, args.format, args.accountId);
     for (const c of args.candidates) {
       if (!c.selected) { skipped++; continue; }
+      // Contrapartida de transferência lançada antes: o extrato a substitui (sem duplicar).
+      const mirror = await db.getFirstAsync<{ id: number }>(
+        `SELECT id FROM transactions WHERE account_id = ? AND mirror = 1 AND amount_cents = ?
+         AND ABS(julianday(date) - julianday(?)) <= ? ORDER BY ABS(julianday(date) - julianday(?)), id LIMIT 1`,
+        args.accountId, c.amountCents, c.date, TRANSFER_WINDOW_DAYS, c.date,
+      );
+      if (mirror) {
+        const u = await db.runAsync(
+          `UPDATE OR IGNORE transactions SET date = ?, description = ?, memo = ?, description_key = ?, dedupe_key = ?, import_id = ?, mirror = 0
+           WHERE id = ?`,
+          c.date, c.description, c.memo ?? null, descriptionKey(c.description), c.dedupeKey, imp.lastInsertRowId, mirror.id,
+        );
+        if (u.changes) { imported++; transfers++; continue; }
+      }
       const r = await db.runAsync(
         `INSERT OR IGNORE INTO transactions
            (account_id, date, description, memo, amount_cents, category_key, category_source, description_key, dedupe_key, import_id)
@@ -455,8 +585,9 @@ export async function commitImport(
       if (r.changes) imported++; else skipped++;
     }
     await db.runAsync('UPDATE imports SET imported_count = ?, skipped_count = ? WHERE id = ?', imported, skipped, imp.lastInsertRowId);
+    transfers += await linkDetectedTransfers(db);
   });
-  return { imported, skipped };
+  return { imported, skipped, transfers };
 }
 
 
@@ -469,6 +600,7 @@ export async function listImports(db: SQLiteDatabase): Promise<ImportRecord[]> {
 /** Desfaz uma importação inteira (apaga os lançamentos que vieram dela). */
 export async function undoImport(db: SQLiteDatabase, importId: number): Promise<void> {
   await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM transactions WHERE mirror = 1 AND transfer_peer_id IN (SELECT id FROM transactions WHERE import_id = ?)', importId);
     await db.runAsync('DELETE FROM transactions WHERE import_id = ?', importId);
     await db.runAsync('DELETE FROM imports WHERE id = ?', importId);
   });
@@ -522,29 +654,33 @@ export async function exportCsv(db: SQLiteDatabase): Promise<string> {
 
 // ---------------- Objetivos ----------------
 
-const GOAL_SQL = `SELECT g.*, COALESCE(SUM(e.amount_cents), 0) AS saved_cents,
-  COALESCE(SUM(CASE WHEN e.date >= ? AND e.initial = 0 THEN e.amount_cents END), 0) AS recent_cents
-  FROM goals g LEFT JOIN goal_entries e ON e.goal_id = g.id`;
+// Com conta vinculada, as movimentações dela desde a criação do sonho contam como depósitos.
+const GOAL_SQL = `SELECT g.*, a.name AS account_name,
+  COALESCE((SELECT SUM(e.amount_cents) FROM goal_entries e WHERE e.goal_id = g.id), 0)
+    + COALESCE((SELECT SUM(t.amount_cents) FROM transactions t WHERE t.account_id = g.account_id AND t.date >= substr(g.created_at, 1, 10)), 0) AS saved_cents,
+  COALESCE((SELECT SUM(e.amount_cents) FROM goal_entries e WHERE e.goal_id = g.id AND e.date >= ?1 AND e.initial = 0), 0)
+    + COALESCE((SELECT SUM(t.amount_cents) FROM transactions t WHERE t.account_id = g.account_id AND t.date >= substr(g.created_at, 1, 10) AND t.date >= ?1), 0) AS recent_cents
+  FROM goals g LEFT JOIN accounts a ON a.id = g.account_id`;
 
 export async function listGoals(db: SQLiteDatabase, since: string): Promise<Goal[]> {
-  return db.getAllAsync<Goal>(`${GOAL_SQL} GROUP BY g.id ORDER BY g.deadline IS NULL, g.deadline, g.id`, since);
+  return db.getAllAsync<Goal>(`${GOAL_SQL} ORDER BY g.deadline IS NULL, g.deadline, g.id`, since);
 }
 
 export async function getGoal(db: SQLiteDatabase, id: number, since: string): Promise<Goal | null> {
-  return db.getFirstAsync<Goal>(`${GOAL_SQL} WHERE g.id = ? GROUP BY g.id`, since, id);
+  return db.getFirstAsync<Goal>(`${GOAL_SQL} WHERE g.id = ?2`, since, id);
 }
 
 export async function saveGoal(db: SQLiteDatabase, g: GoalInput): Promise<number> {
   if (g.id) {
     await db.runAsync(
-      'UPDATE goals SET name = ?, template = ?, icon = ?, color = ?, target_cents = ?, deadline = ? WHERE id = ?',
-      g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.id,
+      'UPDATE goals SET name = ?, template = ?, icon = ?, color = ?, target_cents = ?, deadline = ?, account_id = ? WHERE id = ?',
+      g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.account_id ?? null, g.id,
     );
     return g.id;
   }
   const r = await db.runAsync(
-    'INSERT INTO goals (name, template, icon, color, target_cents, deadline) VALUES (?, ?, ?, ?, ?, ?)',
-    g.name, g.template, g.icon, g.color, g.target_cents, g.deadline,
+    'INSERT INTO goals (name, template, icon, color, target_cents, deadline, account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    g.name, g.template, g.icon, g.color, g.target_cents, g.deadline, g.account_id ?? null,
   );
   return r.lastInsertRowId;
 }
@@ -554,7 +690,13 @@ export async function deleteGoal(db: SQLiteDatabase, id: number): Promise<void> 
 }
 
 export async function listGoalEntries(db: SQLiteDatabase, goalId: number): Promise<GoalEntry[]> {
-  return db.getAllAsync<GoalEntry>('SELECT * FROM goal_entries WHERE goal_id = ? ORDER BY date DESC, id DESC', goalId);
+  return db.getAllAsync<GoalEntry>(
+    `SELECT id, goal_id, date, amount_cents, note, 0 AS auto FROM goal_entries WHERE goal_id = ?1
+     UNION ALL
+     SELECT t.id, g.id, t.date, t.amount_cents, t.description, 1 FROM goals g JOIN transactions t ON t.account_id = g.account_id
+     WHERE g.id = ?1 AND t.date >= substr(g.created_at, 1, 10)
+     ORDER BY date DESC, id DESC`, goalId,
+  );
 }
 
 export async function addGoalEntry(

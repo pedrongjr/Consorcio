@@ -2,7 +2,7 @@ import type { CategoryKind, ParsedStatement } from '../core/types';
 import { rpc } from '../lib/api';
 import type {
   Account, AccountType, AccountWithBalance, Category, ClassificationLogEntry, ClassifyResult, Goal, GoalEntry, GoalInput, ImportCandidate, ImportRecord, Rule,
-  RulePreview, SimilarPreview, Transaction, TxFilter,
+  RulePreview, SimilarPreview, Transaction, TransferInput, TransferResult, TxFilter,
 } from './shared';
 
 /**
@@ -38,7 +38,7 @@ export const reclassifyAll = (_db: Db) => rpc<number>('reclassifyAll');
 
 export const listTransactions = (_db: Db, f: TxFilter = {}) => {
   // Remove filtros vazios (o servidor valida tipos estritamente).
-  const clean = Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined && v !== '' && v !== false));
+  const clean = Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined && v !== '' && v !== false && !(Array.isArray(v) && !v.length)));
   return rpc<Transaction[]>('listTransactions', clean);
 };
 export const getTransaction = (_db: Db, id: number) => rpc<Transaction | null>('getTransaction', id);
@@ -52,10 +52,12 @@ export const addManualTransaction = (
   t: { accountId: number; date: string; description: string; amountCents: number; categoryKey: string | null; notes?: string },
 ) => rpc<void>('addManualTransaction', t);
 export const deleteTransaction = (_db: Db, id: number) => rpc<void>('deleteTransaction', id);
+export const setTransfer = (_db: Db, txId: number, input: TransferInput) => rpc<TransferResult>('setTransfer', txId, input);
+export const detectTransfers = (_db: Db) => rpc<number>('detectTransfers');
 
 export const prepareImport = (_db: Db, accountId: number, st: ParsedStatement) => rpc<ImportCandidate[]>('prepareImport', accountId, st);
 export const commitImport = (_db: Db, args: { accountId: number; fileName: string; format: string; candidates: ImportCandidate[] }) =>
-  rpc<{ imported: number; skipped: number }>('commitImport', args);
+  rpc<{ imported: number; skipped: number; transfers: number }>('commitImport', args);
 export const listImports = (_db: Db) => rpc<ImportRecord[]>('listImports');
 export const undoImport = (_db: Db, importId: number) => rpc<void>('undoImport', importId);
 

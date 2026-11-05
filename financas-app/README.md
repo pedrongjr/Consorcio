@@ -59,7 +59,9 @@ TEST_DATABASE_URL=postgres://postgres:senha@localhost:5432/postgres npm test    
 | **Regras** | "Quando a descrição contiver X → categoria Y", por entradas e/ou saídas. Podem ser criadas na tela do lançamento ou em *Mais → Regras*. |
 | **Resumo** | Saldo das contas, receitas × despesas do mês, gastos por categoria e subcategoria, evolução de 6 meses, alertas de orçamento. |
 | **Orçamentos** | Limite mensal por categoria, com barra de progresso, aviso a partir de 80% e sugestão pela média dos últimos 3 meses. |
-| **Contas e cartões** | Conta corrente, poupança, cartão de crédito, investimentos e carteira. Contas vindas de OFX são reconhecidas pelo banco, agência e conta. |
+| **Contas e cartões** | Conta corrente, poupança, cartão de crédito, investimentos e carteira. Contas vindas de OFX são reconhecidas pelo banco, agência e conta. Os lançamentos podem ser vistos com **todas as contas juntas** ou filtrando várias contas, com o saldo das escolhidas. |
+| **Transferências entre contas** | Ao importar, saídas e entradas de mesmo valor entre suas contas (até 4 dias, com cara de transferência: PIX, TED, aplicação, fatura...) são **ligadas automaticamente** e mostradas como "Caixa → Nubank". À mão, escolha a outra conta no lançamento; se o extrato dela ainda não foi importado, o app cria a contrapartida, que depois é **substituída** pelo lançamento do banco (sem duplicar). |
+| **Sonhos** | Modelos (viagem, carro, casa, reserva...), prazo, quanto guardar por mês e se cabe na sobra média. **Conta vinculada**: as movimentações dela contam sozinhas como depósitos. **Como chegar lá**: % da renda, dia sugerido para a transferência automática (logo após o salário) e onde cortar gastos, com um toque para criar os orçamentos. |
 | **Outros** | Lançamentos manuais, busca e filtros, desfazer uma importação inteira, reclassificar tudo e exportar CSV (abre no Excel). |
 
 ## Como exportar o extrato no banco
@@ -88,7 +90,8 @@ npx expo start          # leia o QR code com o Expo Go (Android) ou com a câmer
 2. Cada página é desenhada a ~2000 px de largura e passa pelo Tesseract (português, modelo LSTM).
 3. A inclinação da página é estimada pelas linhas de base do Tesseract e as coordenadas são endireitadas, para que data, descrição e valor de uma linha fiquem juntos mesmo em foto torta.
 4. Erros típicos são corrigidos só em valores e datas: `O`→`0`, `l`/`I`→`1`, `RS`→`R$`, menos lido como aspas/travessão, vírgula perdida (`-2780 3.001,93` → `-27,80`), bordas de tabela.
-5. Em extratos com coluna de saldo, o sinal vem da variação do saldo; se o OCR perdeu o valor e só sobrou o saldo, o valor é calculado pela diferença (com aviso).
+5. As palavras são agrupadas em linhas pela sobreposição vertical (a vírgula do valor desce abaixo da linha e não pode separar valor e saldo da descrição).
+6. Em extratos com coluna de saldo, o sinal vem da variação do saldo; se o OCR perdeu o valor e só sobrou o saldo, o valor é calculado pela diferença. Se o valor lido não bate com a variação do saldo e o saldo é confirmado pela linha seguinte, o valor é corrigido (com aviso). Extratos do mais novo para o mais antigo (Caixa) e indicadores `C`/`D` são reconhecidos.
 
 Foi verificado de ponta a ponta no Chromium com um PDF escaneado, um print e uma foto torta e desfocada; as linhas lidas pelo Tesseract viraram testes em `src/core/__tests__/pdfLayout.test.ts`. OCR nunca é perfeito: sempre confira a revisão antes de importar.
 

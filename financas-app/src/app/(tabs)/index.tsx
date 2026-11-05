@@ -112,7 +112,7 @@ export default function Dashboard() {
           </Pressable>
         )}
         >
-          Objetivos
+          Sonhos
         </SectionTitle>
         {data?.goals.length ? data.goals.slice(0, 3).map(({ g, plan }) => (
           <Pressable
@@ -130,7 +130,7 @@ export default function Dashboard() {
             <ProgressBar ratio={plan.progress} color={g.color} />
           </Pressable>
         )) : (
-          <Text style={styles.muted}>Planeje uma viagem, a troca do carro ou a reserva de emergência e veja quanto guardar por mês.</Text>
+          <Text style={styles.muted}>Planeje uma viagem, a troca do carro ou a reserva de emergência: o app diz quanto guardar por mês e onde economizar.</Text>
         )}
       </Card>
 

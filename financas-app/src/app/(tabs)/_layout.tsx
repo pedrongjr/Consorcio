@@ -24,7 +24,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="index" options={{ title: 'Resumo', tabBarIcon: icon('pie-chart') }} />
       <Tabs.Screen name="transactions" options={{ title: 'Lançamentos', tabBarIcon: icon('list') }} />
       <Tabs.Screen name="import" options={{ title: 'Importar', tabBarIcon: icon('cloud-upload') }} />
-      <Tabs.Screen name="budgets" options={{ title: 'Planejar', tabBarIcon: icon('flag') }} />
+      <Tabs.Screen name="budgets" options={{ title: 'Sonhos', tabBarIcon: icon('star') }} />
       <Tabs.Screen name="more" options={{ title: 'Mais', tabBarIcon: icon('menu') }} />
     </Tabs>
   );

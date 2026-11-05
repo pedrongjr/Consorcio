@@ -28,8 +28,8 @@ export default function RootLayout() {
           <Stack.Screen name="rules" options={{ title: 'Regras de classificação' }} />
           <Stack.Screen name="imports" options={{ title: 'Histórico de importações' }} />
           <Stack.Screen name="classifications" options={{ title: 'Histórico de classificações' }} />
-          <Stack.Screen name="goal/new" options={{ title: 'Novo objetivo' }} />
-          <Stack.Screen name="goal/[id]" options={{ title: 'Objetivo' }} />
+          <Stack.Screen name="goal/new" options={{ title: 'Novo sonho' }} />
+          <Stack.Screen name="goal/[id]" options={{ title: 'Sonho' }} />
         </Stack>
         </AuthGate>
       </DbProvider>

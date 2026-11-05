@@ -63,7 +63,8 @@ export default function ImportReview() {
     try {
       const r = await commitImport(db, { accountId: session.accountId, fileName: session.fileName, format: session.statement.format, candidates: items });
       importSession.clear();
-      showAlert('Importação concluída', `${r.imported} lançamento(s) importado(s).${r.skipped ? ` ${r.skipped} ignorado(s).` : ''}`);
+      showAlert('Importação concluída', `${r.imported} lançamento(s) importado(s).${r.skipped ? ` ${r.skipped} ignorado(s).` : ''}` +
+        (r.transfers ? `\n\n${r.transfers} transferência(s) entre suas contas identificada(s) — não contam como gasto nem receita.` : ''));
       // Abre a lista no mês mais recente do extrato importado.
       const months = items.filter((i) => i.selected).map((i) => i.date.slice(0, 7)).sort();
       const month = months[months.length - 1];

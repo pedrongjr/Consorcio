@@ -5,11 +5,12 @@ import { GOAL_TEMPLATES, planGoal, type GoalTemplate } from '../../core/goals';
 import { formatBRL, monthLabel, shiftMonth } from '../../core/reports';
 import { parseAmount } from '../../core/text';
 import { useDb } from '../../db/DbProvider';
-import { addGoalEntry, getGoal, saveGoal } from '../../db/repo';
+import { addGoalEntry, getGoal, listAccounts, saveGoal, type AccountWithBalance } from '../../db/repo';
 import { showAlert } from '../../lib/dialog';
 import { planningContext, type PlanningContext } from '../../lib/planning';
 import { MonthPicker } from '../../components/MonthPicker';
-import { Button, Card, colors, currentMonth, Field, Icon, styles, todayIso } from '../../components/ui';
+import { HowToReachCard } from '../../components/HowToReach';
+import { Button, Card, Chip, colors, currentMonth, Field, Icon, styles, todayIso } from '../../components/ui';
 
 /** Cria (escolhendo um modelo) ou edita (`?id=`) um objetivo. */
 export default function GoalForm() {
@@ -24,9 +25,12 @@ export default function GoalForm() {
   const [picking, setPicking] = useState(false);
   const [ctx, setCtx] = useState<PlanningContext | null>(null);
   const [saving, setSaving] = useState(false);
+  const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
+  const [accountId, setAccountId] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
+    listAccounts(db).then((a) => { if (alive) setAccounts(a); }).catch(() => undefined);
     planningContext(db).then(async (c) => {
       if (!alive) return;
       setCtx(c);
@@ -37,6 +41,7 @@ export default function GoalForm() {
         setName(g.name);
         setTarget(formatBRL(g.target_cents).replace('R$ ', ''));
         setDeadline(g.deadline);
+        setAccountId(g.account_id ?? null);
       }
     }).catch(() => undefined);
     return () => { alive = false; };
@@ -55,13 +60,13 @@ export default function GoalForm() {
 
   async function save() {
     if (!template || saving) return;
-    if (!name.trim()) return showAlert('Dê um nome ao objetivo');
+    if (!name.trim()) return showAlert('Dê um nome ao sonho');
     if (!targetCents) return showAlert('Informe quanto você precisa juntar');
     setSaving(true);
     try {
       const goalId = await saveGoal(db, {
         id: editingId, name: name.trim(), template: template.key, icon: template.icon, color: template.color,
-        target_cents: targetCents, deadline,
+        target_cents: targetCents, deadline, account_id: accountId,
       });
       if (!editingId && initialCents) await addGoalEntry(db, goalId, { date: todayIso(), amountCents: initialCents, note: 'Valor que já tinha guardado', initial: true });
       if (editingId) router.back();
@@ -76,7 +81,7 @@ export default function GoalForm() {
   if (!template) {
     return (
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        <Stack.Screen options={{ title: 'Novo objetivo' }} />
+        <Stack.Screen options={{ title: 'Novo sonho' }} />
         <Card>
           <Text style={{ fontSize: 20, fontWeight: '700', color: colors.text }}>Quer realizar seus sonhos?</Text>
           <Text style={[styles.muted, { marginTop: 4 }]}>Veja como chegar lá. Comece escolhendo uma das opções abaixo.</Text>
@@ -107,7 +112,7 @@ export default function GoalForm() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <Stack.Screen options={{ title: editingId ? 'Editar objetivo' : template.name }} />
+      <Stack.Screen options={{ title: editingId ? 'Editar sonho' : template.name }} />
       <Card>
         <View style={[styles.row, { marginBottom: 12 }]}>
           <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: template.color, alignItems: 'center', justifyContent: 'center' }}>
@@ -120,7 +125,7 @@ export default function GoalForm() {
             </Pressable>
           ) : null}
         </View>
-        <Field label="Nome do objetivo" value={name} onChangeText={setName} placeholder="Ex.: Viagem para o Nordeste" />
+        <Field label="Nome do sonho" value={name} onChangeText={setName} placeholder="Ex.: Viagem para o Nordeste" />
         <Field label="Quanto precisa juntar (R$)" value={target} onChangeText={setTarget} keyboardType="decimal-pad" placeholder="0,00" />
         {!editingId ? (
           <Field label="Quanto já tem guardado (R$)" value={initial} onChangeText={setInitial} keyboardType="decimal-pad" placeholder="0,00 (opcional)" />
@@ -130,6 +135,21 @@ export default function GoalForm() {
           <Text style={{ color: colors.text }}>{deadline ? monthLabel(deadline, true) : 'Sem prazo'}</Text>
           <Icon name="calendar-outline" size={18} color={colors.primary} />
         </Pressable>
+        {accounts.length ? (
+          <>
+            <Text style={[styles.label, { marginTop: 12 }]}>Conta onde vai guardar (opcional)</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {accounts.map((a) => (
+                <Chip key={a.id} label={a.name} active={accountId === a.id} color={a.color} onPress={() => setAccountId(accountId === a.id ? null : a.id)} />
+              ))}
+            </View>
+            <Text style={[styles.muted, { marginTop: 6 }]}>
+              {accountId
+                ? 'Tudo que entrar ou sair desta conta a partir de hoje conta automaticamente como depósito ou retirada do sonho. Ideal para uma poupança ou investimento separado.'
+                : 'Vinculando uma conta (poupança, investimento), os depósitos são registrados sozinhos a cada extrato importado.'}
+            </Text>
+          </>
+        ) : null}
       </Card>
 
       {preview && preview.status !== 'done' ? (
@@ -156,11 +176,15 @@ export default function GoalForm() {
         </Card>
       ) : null}
 
-      <Button title={editingId ? 'Salvar' : 'Criar objetivo'} icon="checkmark" onPress={save} loading={saving} />
+      {preview && preview.status !== 'done' && preview.monthlyNeededCents && ctx ? (
+        <HowToReachCard monthlyCents={preview.monthlyNeededCents} ctx={ctx} accountName={accounts.find((a) => a.id === accountId)?.name} />
+      ) : null}
+
+      <Button title={editingId ? 'Salvar' : 'Criar sonho'} icon="checkmark" onPress={save} loading={saving} />
 
       <MonthPicker
         visible={picking}
-        title="Prazo do objetivo"
+        title="Prazo do sonho"
         value={deadline ?? shiftMonth(currentMonth(), 11)}
         onClose={() => setPicking(false)}
         onSelect={(m) => { setDeadline(m); setPicking(false); }}

@@ -121,3 +121,57 @@ it('foto torta e desfocada (linhas reais do Tesseract após endireitar) vira lan
   const st = parsePdfText(cleanOcrLines(lines), { ocr: true });
   expect(st.transactions.map((t) => t.amountCents)).toEqual([-24537, 150000, -18990, -3500, -2780]);
 });
+
+describe('OCR de extrato da Caixa (mais novo primeiro, valores com C/D)', () => {
+  it('mantém valor e saldo na mesma linha mesmo com a vírgula descendo', () => {
+    // O Tesseract devolve "6,00" com a caixa mais baixa que a do "D" ao lado.
+    expect(groupTextItems([
+      { str: 'APOSTA', x: 200, y: 1000, width: 80, height: 22 },
+      { str: '6,00', x: 700, y: 994, width: 50, height: 28 },
+      { str: 'D', x: 755, y: 1000, width: 12, height: 22 },
+      { str: '21,59', x: 830, y: 994, width: 60, height: 28 },
+      { str: 'C', x: 895, y: 1000, width: 12, height: 22 },
+      { str: 'SALDO', x: 200, y: 950, width: 80, height: 22 },
+    ])).toEqual(['APOSTA 6,00 D 21,59 C', 'SALDO']);
+  });
+
+  // Linhas como o Tesseract leu o extrato (nomes trocados).
+  const lines = [
+    'CAIXA FO',
+    'Extrato por período',
+    'Cliente FULANO DE TAL',
+    'Data 02/11/2026- 23:00',
+    'Período dos lançamentos 01/10/2026 até 31/10/2026',
+    'SALDO ANTERIOR R$19,68 C',
+    'Lançamentos Nr. Doc Histórico/Complemento Favorecido CPF/CNPJ Valor Saldo',
+    '22/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 9,59 C',
+    '22/10/2026 - 11:11:50 221117 APOSTA LOTERIA INTERNET 1200 D 9,59C',
+    '22/10/2026 - 07:37:31 220737 APOSTA LOTERIA INTERNET 6,00 D 21,59 C',
+    '22/10/2026 - 07:83:18 220733 APOSTA LOTERIA INTERNET 12,00 D 27,59 C',
+    '20/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 39,59 C',
+    '20/10/2026 - 09:12:27 200912 DEB PIX CHAVE Fulano De Tal 616.9B1+* 4.600,00 D 39,59 C',
+    '20/10/2026 - 06:59:40 000033 RECEBIMENTO TED SALARIO Fulano De Tal 616.9B1*+ 4.565,80 C 4.639,59 C',
+    '08/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 74,29C',
+    '08/10/2026 - 03:57:11 000000 DEBITO PRESTACAO HAB 4.015,84 D 7429C',
+    '06/10/2026- 00:00:00 000000 SALDO DIA 0,00 C 4090,/13C',
+    '06/10/2026- 07:55:10 060755 DEB PIX CHAVE Fulano De Tal **r 616.981 3.000,00 D 4.090,13',
+    '06/10/2026 - 07:25:49 000033 RECEBIMENTO TED SALARIO Fulano De Tal +14 616.981 7.07045C 7.090,13C',
+    'Alô CAIXA: 4004 0104 (Capitais e Regiões Metropolitanas)',
+  ];
+
+  it('lê o valor (não o saldo), com sinal certo e erros corrigidos pelo saldo', () => {
+    const st = parsePdfText(cleanOcrLines(lines), { ocr: true });
+    expect(st.transactions.map((t) => [t.date, t.description, t.amountCents])).toEqual([
+      ['2026-10-22', 'APOSTA LOTERIA INTERNET', -1200],
+      ['2026-10-22', 'APOSTA LOTERIA INTERNET', -600],
+      ['2026-10-22', 'APOSTA LOTERIA INTERNET', -1200],
+      ['2026-10-20', 'DEB PIX CHAVE Fulano De Tal', -460000],
+      // OCR leu 4.565,80; a variação do saldo mostra 4.565,30.
+      ['2026-10-20', 'RECEBIMENTO TED SALARIO Fulano De Tal', 456530],
+      ['2026-10-08', 'DEBITO PRESTACAO HAB', -401584],
+      ['2026-10-06', 'DEB PIX CHAVE Fulano De Tal', -300000],
+      ['2026-10-06', 'RECEBIMENTO TED SALARIO Fulano De Tal', 707045],
+    ]);
+    expect(st.warnings.join(' ')).toContain('corrigidos pela diferença de saldo');
+  });
+});

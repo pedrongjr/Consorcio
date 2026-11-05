@@ -1,9 +1,10 @@
+import { router } from 'expo-router';
 import { useDb } from '../db/DbProvider';
 import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { showAlert } from '../lib/dialog';
 import { parseAmount } from '../core/text';
-import { ACCOUNT_TYPES, deleteAccount, listAccounts, saveAccount, type AccountType, type AccountWithBalance } from '../db/repo';
+import { ACCOUNT_TYPES, deleteAccount, detectTransfers, listAccounts, saveAccount, type AccountType, type AccountWithBalance } from '../db/repo';
 import { useAsyncData } from '../lib/useAsyncData';
 import { Button, Card, Chip, colors, EmptyState, Field, Icon, Money, SectionTitle, styles } from '../components/ui';
 
@@ -33,6 +34,21 @@ export default function Accounts() {
     ]);
   }
 
+  async function findTransfers() {
+    try {
+      const n = await detectTransfers(db);
+      showAlert(
+        n ? `${n} transferência(s) encontrada(s)` : 'Nenhuma transferência nova',
+        n
+          ? 'Saídas e entradas de mesmo valor entre suas contas foram ligadas e marcadas como transferência (não contam como gasto nem receita).'
+          : 'Para indicar uma transferência à mão, abra o lançamento, escolha a categoria “Transferências entre contas” e a outra conta.',
+      );
+      reload();
+    } catch (e) {
+      showAlert('Não foi possível procurar', (e as Error).message);
+    }
+  }
+
   const edit = (a: AccountWithBalance) =>
     setDraft({ id: a.id, name: a.name, type: a.type, color: a.color, initial: (a.initial_balance_cents / 100).toFixed(2).replace('.', ',') });
 
@@ -48,13 +64,30 @@ export default function Accounts() {
                 <Text style={styles.muted}>{ACCOUNT_TYPES.find((t) => t.value === a.type)?.label} · {a.tx_count} lançamentos</Text>
               </View>
               <Money cents={a.balance_cents} />
+              <Pressable accessibilityLabel={`Ver lançamentos de ${a.name}`} hitSlop={10}
+                onPress={() => router.push({ pathname: '/transactions', params: { account: String(a.id) } })}>
+                <Icon name="list" size={20} color={colors.primary} />
+              </Pressable>
             </Pressable>
           ))}
+          {data.length > 1 ? (
+            <View style={[styles.row, { paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border }]}>
+              <Text style={{ flex: 1, color: colors.text, fontWeight: '700' }}>Todas as contas</Text>
+              <Money cents={data.reduce((s, a) => s + a.balance_cents, 0)} />
+              <Pressable accessibilityLabel="Ver lançamentos de todas as contas" hitSlop={10}
+                onPress={() => router.push({ pathname: '/transactions', params: { account: '' } })}>
+                <Icon name="list" size={20} color={colors.primary} />
+              </Pressable>
+            </View>
+          ) : null}
         </Card>
       ) : (
         <EmptyState icon="card-outline" title="Nenhuma conta" text="As contas também são criadas ao importar um extrato." />
       )}
       <Button title="Nova conta" icon="add" onPress={() => setDraft({ name: '', type: 'checking', initial: '', color: COLORS[(data?.length ?? 0) % COLORS.length] })} />
+      {(data?.length ?? 0) > 1 ? (
+        <Button title="Procurar transferências entre contas" icon="swap-horizontal" variant="secondary" onPress={findTransfers} />
+      ) : null}
       <Text style={[styles.muted, { textAlign: 'center' }]}>
         Saldo = saldo inicial + soma dos lançamentos. Ajuste o saldo inicial para bater com o extrato do banco.
       </Text>

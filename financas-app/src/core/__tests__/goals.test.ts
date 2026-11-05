@@ -47,3 +47,33 @@ describe('auxiliares', () => {
     expect(goalPace([], '2026-11')).toBeNull();
   });
 });
+
+describe('suggestCuts e payday', () => {
+  const cats = [
+    { key: 'moradia', name: 'Moradia', avgCents: 300000 },
+    { key: 'lazer', name: 'Lazer', avgCents: 100000, topChild: 'Viagens' },
+    { key: 'alimentacao', name: 'Alimentação', avgCents: 200000 },
+    { key: 'minha', name: 'Minha categoria', avgCents: 20000 },
+  ];
+  it('corta primeiro onde dá para economizar mais, sem tocar em essenciais', async () => {
+    const { suggestCuts } = await import('../goals');
+    const r = suggestCuts(cats, 40000);
+    expect(r.cuts.map((c) => [c.key, c.cutCents, c.limitCents])).toEqual([
+      ['lazer', 30000, 70000],
+      ['alimentacao', 10000, 190000],
+    ]);
+    expect(r.covers).toBe(true);
+    expect(r.cuts[0].topChild).toBe('Viagens');
+    expect(suggestCuts(cats, 1_000_000).covers).toBe(false);
+    expect(suggestCuts(cats, 1_000_000).cuts.some((c) => c.key === 'moradia')).toBe(false);
+    expect(suggestCuts(cats, 0).cuts).toEqual([]);
+  });
+  it('dia do salário: maior receita de cada mês', async () => {
+    const { payday } = await import('../goals');
+    expect(payday([
+      { date: '2026-08-05', amountCents: 700000 }, { date: '2026-08-20', amountCents: 5000 },
+      { date: '2026-09-05', amountCents: 700000 }, { date: '2026-10-06', amountCents: 707045 }, { date: '2026-10-20', amountCents: 456530 },
+    ])).toBe(5);
+    expect(payday([])).toBeNull();
+  });
+});

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { displayDescription } from '../../core/classifier';
 import { formatDateBR } from '../../core/reports';
+import { transferLabel } from '../../core/transfers';
 import {
   classifyTransaction, listAccounts, listCategories, listTransactions, resetClassification, undoClassification,
   type Category, type Transaction,
@@ -19,7 +20,8 @@ export default function Transactions() {
   const db = useDb();
   const params = useLocalSearchParams<{ category?: string; month?: string; account?: string }>();
   const [month, setMonth] = useState<string | null>(params.month ?? currentMonth());
-  const [accountId, setAccountId] = useState<number | undefined>(params.account ? Number(params.account) : undefined);
+  /** Contas visíveis (vazio = todas as contas juntas). */
+  const [accountIds, setAccountIds] = useState<number[]>(params.account ? [Number(params.account)] : []);
   const [categoryKey, setCategoryKey] = useState<string | undefined>(params.category);
   const [search, setSearch] = useState('');
   const [uncategorized, setUncategorized] = useState(false);
@@ -37,17 +39,17 @@ export default function Transactions() {
     setLastParams(paramsKey);
     if (params.month) setMonth(params.month);
     setCategoryKey(params.category);
-    setAccountId(params.account ? Number(params.account) : undefined);
+    setAccountIds(params.account ? [Number(params.account)] : []);
   }
 
   const { data, reload } = useAsyncData(async () => {
     const [txs, accounts, cats] = await Promise.all([
-      listTransactions(db, { month: month ?? undefined, accountId, categoryKey, search, uncategorizedOnly: uncategorized }),
+      listTransactions(db, { month: month ?? undefined, accountIds, categoryKey, search, uncategorizedOnly: uncategorized }),
       listAccounts(db),
       listCategories(db),
     ]);
     return { txs, accounts, cats };
-  }, [db, month, accountId, categoryKey, search, uncategorized]);
+  }, [db, month, accountIds.join(','), categoryKey, search, uncategorized]);
 
   const catMap = useMemo(() => new Map<string, Category>((data?.cats ?? []).map((c) => [c.key, c])), [data?.cats]);
   const totals = useMemo(() => {
@@ -60,6 +62,9 @@ export default function Transactions() {
   }, [data?.txs, catMap]);
 
   const selectedCat = categoryKey ? catMap.get(categoryKey) : undefined;
+  const visibleAccounts = (data?.accounts ?? []).filter((a) => !accountIds.length || accountIds.includes(a.id));
+  const balance = visibleAccounts.reduce((s, a) => s + a.balance_cents, 0);
+  const toggleAccount = (id: number) => setAccountIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
 
   async function changeCategory(t: Transaction, key: string) {
     setEditing(null);
@@ -68,6 +73,10 @@ export default function Transactions() {
       const r = await classifyTransaction(db, { txId: t.id, categoryKey: key, applySimilar: false });
       if (r.logId) setLastChange({ logId: r.logId, text: `“${displayDescription(t.description, t.memo)}” → ${catMap.get(key)?.name ?? key}` });
       reload();
+      // Transferência: abre o lançamento para escolher de/para qual conta.
+      if (catMap.get(key)?.kind === 'transfer' && !t.transfer_account_id) {
+        router.push({ pathname: '/transaction/[id]', params: { id: String(t.id) } });
+      }
     } catch (e) {
       showAlert('Não foi possível alterar', (e as Error).message);
     }
@@ -112,6 +121,7 @@ export default function Transactions() {
 
   const renderItem = ({ item }: { item: Transaction }) => {
     const c = item.category_key ? catMap.get(item.category_key) : undefined;
+    const isTransfer = c?.kind === 'transfer';
     return (
       <Pressable
         onPress={() => router.push({ pathname: '/transaction/[id]', params: { id: String(item.id) } })}
@@ -131,10 +141,19 @@ export default function Transactions() {
                 onPress={() => setEditing(item)}
                 style={({ pressed }) => [styles.row, { gap: 2, opacity: pressed ? 0.6 : 1 }]}
               >
-                {c ? <CategoryBadge name={c.name} icon={c.icon} color={c.color} /> : <CategoryBadge name="Sem categoria" icon="help" color={colors.warning} />}
+                {c ? (
+                  <CategoryBadge
+                    // Transferência: o rótulo mostra de qual conta para qual.
+                    name={isTransfer ? transferLabel(item.amount_cents, item.account_name, item.transfer_account_name) : c.name}
+                    icon={c.icon}
+                    color={c.color}
+                  />
+                ) : <CategoryBadge name="Sem categoria" icon="help" color={colors.warning} />}
                 <Icon name="chevron-down" size={14} color={colors.muted} />
               </Pressable>
-              <Text style={[styles.muted, { fontSize: 12, flexShrink: 1 }]} numberOfLines={1}>{item.account_name}</Text>
+              {isTransfer ? null : (
+                <Text style={[styles.muted, { fontSize: 12, flexShrink: 1 }]} numberOfLines={1}>{item.account_name}</Text>
+              )}
             </View>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
@@ -166,10 +185,22 @@ export default function Transactions() {
             active={!!selectedCat}
             onPress={() => (selectedCat ? setCategoryKey(undefined) : setPicker(true))}
           />
-          {data?.accounts.map((a) => (
-            <Chip key={a.id} label={a.name} active={accountId === a.id} color={a.color} onPress={() => setAccountId(accountId === a.id ? undefined : a.id)} />
-          ))}
         </ScrollView>
+        {data && data.accounts.length > 1 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
+            <Icon name="wallet-outline" size={16} color={colors.muted} />
+            <Chip label="Todas as contas" active={!accountIds.length} onPress={() => setAccountIds([])} />
+            {data.accounts.map((a) => (
+              <Chip key={a.id} label={a.name} active={accountIds.includes(a.id)} color={a.color} onPress={() => toggleAccount(a.id)} />
+            ))}
+          </ScrollView>
+        ) : null}
+        {data?.accounts.length ? (
+          <Text style={styles.muted}>
+            Saldo {accountIds.length ? `de ${visibleAccounts.length === 1 ? visibleAccounts[0].name : `${visibleAccounts.length} contas`}` : 'de todas as contas'}:{' '}
+            <Money cents={balance} size={13} />
+          </Text>
+        ) : null}
         <View style={[styles.row, { justifyContent: 'space-between' }]}>
           <Text style={styles.muted}>{data?.txs.length ?? 0} lançamentos · toque na categoria para trocar</Text>
           <View style={[styles.row, { gap: 10 }]}>

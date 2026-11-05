@@ -185,6 +185,30 @@ CREATE TABLE IF NOT EXISTS goal_entries (
   FOREIGN KEY (goal_id, user_id) REFERENCES goals(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS goal_entries_goal ON goal_entries (user_id, goal_id);
+
+-- Transferências entre contas: a outra conta e o lançamento correspondente.
+-- As chaves incluem user_id: não dá para ligar a conta/lançamento de outro usuário.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_account_id INTEGER;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_peer_id INTEGER;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS mirror INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS tx_user_peer ON transactions (user_id, transfer_peer_id);
+-- Sonho com conta vinculada (movimentações dela contam como depósitos).
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS account_id INTEGER;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tx_transfer_account_fk') THEN
+    ALTER TABLE transactions ADD CONSTRAINT tx_transfer_account_fk FOREIGN KEY (transfer_account_id, user_id)
+      REFERENCES accounts(id, user_id) ON DELETE SET NULL (transfer_account_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tx_transfer_peer_fk') THEN
+    ALTER TABLE transactions ADD CONSTRAINT tx_transfer_peer_fk FOREIGN KEY (transfer_peer_id, user_id)
+      REFERENCES transactions(id, user_id) ON DELETE SET NULL (transfer_peer_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'goals_account_fk') THEN
+    ALTER TABLE goals ADD CONSTRAINT goals_account_fk FOREIGN KEY (account_id, user_id)
+      REFERENCES accounts(id, user_id) ON DELETE SET NULL (account_id);
+  END IF;
+END $$;
 `;
 
 export interface RlsStatus {

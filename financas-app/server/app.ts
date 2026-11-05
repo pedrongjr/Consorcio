@@ -91,7 +91,7 @@ const RPC = {
   reclassifyAll: { args: z.tuple([]), run: repo.reclassifyAll },
   listTransactions: {
     args: z.tuple([z.object({
-      month: month.optional(), accountId: id.optional(), categoryKey: catKey.optional(),
+      month: month.optional(), accountId: id.optional(), accountIds: z.array(id).max(200).optional(), categoryKey: catKey.optional(),
       search: text(200).optional(), uncategorizedOnly: z.boolean().optional(),
     }).optional()]),
     run: repo.listTransactions,
@@ -122,7 +122,7 @@ const RPC = {
   saveGoal: {
     args: z.tuple([z.object({
       id: id.optional(), name: text(120).min(1), template: text(40), icon, color,
-      target_cents: z.number().int().positive().max(1e13), deadline: month.nullable(),
+      target_cents: z.number().int().positive().max(1e13), deadline: month.nullable(), account_id: id.nullable().optional(),
     })]),
     run: repo.saveGoal,
   },
@@ -140,6 +140,11 @@ const RPC = {
     run: repo.addManualTransaction,
   },
   deleteTransaction: { args: z.tuple([id]), run: repo.deleteTransaction },
+  setTransfer: {
+    args: z.tuple([id, z.object({ accountId: id.nullable(), categoryKey: catKey.nullable().optional(), createMirror: z.boolean().optional() })]),
+    run: repo.setTransfer,
+  },
+  detectTransfers: { args: z.tuple([]), run: repo.detectTransfers },
   prepareImport: { args: z.tuple([id, statement]), run: repo.prepareImport },
   commitImport: {
     args: z.tuple([z.object({ accountId: id, fileName: text(300), format: text(20), candidates: z.array(candidate).max(20_000) })]),

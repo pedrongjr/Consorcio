@@ -175,3 +175,48 @@ describe('OCR de extrato da Caixa (mais novo primeiro, valores com C/D)', () => 
     expect(st.warnings.join(' ')).toContain('corrigidos pela diferença de saldo');
   });
 });
+
+describe('OCR da Caixa no leitor do navegador (pdf.js + Tesseract)', () => {
+  // Linhas como o leitor do site leu o mesmo extrato (nomes trocados): o
+  // "SALDO DIA" de 08/10 veio com o saldo "74/29" e o saldo anterior sem vírgula.
+  const lines = [
+    'CAIXA',
+    'Cliente FULANO DE TAL',
+    'Período dos lançamentos 01/10/2026 até 31/10/2026',
+    'SALDO ANTERIOR R$1968C',
+    'Lançamentos Nr. Doc Histórico/Complemento Favorecido CPF/CNPJ Valor Saldo',
+    '22/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 9,59 C',
+    '22/10/2026- 11:11:50 221111 APOSTA LOTERIA INTERNET 12,00 D 9,59 C',
+    '22/10/2026 - 07:37:31 220737 APOSTA LOTERIA INTERNET 6,00 D 21,59',
+    '22/10/2026 - 07:33:18 220733 APOSTA LOTERIA INTERNET 12,00 D 27,59 C',
+    '20/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 39,59 C',
+    '20/10/2026 - 09:12:27 200912 DEB PIX CHAVE Fulano De Tal *** 616.981*+* 4.600,00 D 39,59 C',
+    '20/10/2026 - 06:59:40 000033 RECEBIMENTO TED SALARIO Fulano De Tal 616.981 4.565,30 C 4.639,59 C',
+    '08/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 74/29',
+    '08/10/2026 - 03:57:11 000000 DEBITO PRESTACAO HAB 4.015,84 D 74,29 C',
+    '06/10/2026 - 00:00:00 000000 SALDO DIA 0,00 C 4.090,13 C',
+    '06/10/2026 - 07:55:10 060755 DEB PIX CHAVE Fulano De Tal 616.981 3.000,00 D 4.090,13 C',
+    '06/10/2026 - 07:25:49 000033 RECEBIMENTO TED SALARIO Fulano De Tal *** 616.981*+* 7070,45 C 7.090,13 C',
+    'Alô CAIXA: 4004 0104 (Capitais e Regiões Metropolitanas)',
+  ];
+
+  it('não "corrige" um valor certo por causa de um saldo do dia mal lido', () => {
+    const st = parsePdfText(cleanOcrLines(lines), { ocr: true });
+    expect(st.transactions.map((t) => [t.date, t.amountCents])).toEqual([
+      ['2026-10-22', -1200], ['2026-10-22', -600], ['2026-10-22', -1200],
+      ['2026-10-20', -460000], ['2026-10-20', 456530], ['2026-10-08', -401584],
+      ['2026-10-06', -300000], ['2026-10-06', 707045],
+    ]);
+    expect(st.transactions[3].memo).toBe('CPF/CNPJ ***616981**');
+    expect(st.holderName).toBe('FULANO DE TAL');
+    // Saldo anterior (19,68) + lançamentos = saldo final (9,59): nenhum aviso de diferença.
+    expect(st.warnings.join(' ')).not.toMatch(/diferença|não fecha|corrigidos/);
+  });
+
+  it('avisa quando falta um lançamento (saldo não fecha)', () => {
+    const missing = lines.filter((l) => !l.includes('DEBITO PRESTACAO'));
+    const st = parsePdfText(cleanOcrLines(missing), { ocr: true });
+    expect(st.transactions).toHaveLength(7);
+    expect(st.warnings.join(' ')).toMatch(/diferença de/);
+  });
+});

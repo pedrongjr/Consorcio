@@ -1,6 +1,7 @@
 import type { CategoryRule, ParsedTransaction } from './types';
 import { descriptionKey, normalizeText } from './text';
 import { UNCATEGORIZED_EXPENSE, UNCATEGORIZED_INCOME } from './categories';
+import { isSelfTransfer, type Holder } from './holder';
 
 export interface Classification {
   categoryKey: string;
@@ -45,7 +46,14 @@ export class Classifier {
   private compiled: CompiledRule[];
   private history = new Map<string, { in?: string; out?: string }>();
 
-  constructor(rules: CategoryRule[], history: HistoryEntry[] = []) {
+  /** Titular das contas (nome/CPF): PIX/TED para si mesmo vira transferência. */
+  private holder: Holder | null;
+  /** Categoria usada para transferências para si mesmo (se existir para o usuário). */
+  private selfCategory: string | null;
+
+  constructor(rules: CategoryRule[], history: HistoryEntry[] = [], opts: { holder?: Holder | null; selfCategory?: string | null } = {}) {
+    this.holder = opts.holder ?? null;
+    this.selfCategory = opts.selfCategory === undefined ? 'transferencias' : opts.selfCategory;
     this.compiled = rules.filter((r) => r.pattern.trim()).map(compile).sort((a, b) => b.weight - a.weight);
     for (const h of history) {
       if (!h.key) continue;
@@ -61,6 +69,7 @@ export class Classifier {
 
     // 1) Regras criadas pelo usuário
     // 2) Lançamentos idênticos que o usuário já categorizou (aprendizado)
+    // 2b) Transferência para/de você mesmo (nome ou CPF do titular)
     // 3) Regras padrão por palavra-chave
     for (const c of this.compiled) {
       if (c.rule.source !== 'user') break;
@@ -70,6 +79,10 @@ export class Classifier {
     const simKey = similarityKey(tx.description, tx.memo);
     const learned = simKey ? this.history.get(simKey)?.[direction] : undefined;
     if (learned) return { categoryKey: learned, rule: null, confidence: 'history' };
+    // 2b) Para/de você mesmo (nome ou CPF do titular): transferência entre contas suas.
+    if (this.selfCategory && this.holder && isSelfTransfer(tx, this.holder)) {
+      return { categoryKey: this.selfCategory, rule: null, confidence: 'rule' };
+    }
     for (const c of this.compiled) {
       if (c.rule.source === 'user') continue;
       if (c.rule.direction && c.rule.direction !== direction) continue;

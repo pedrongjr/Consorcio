@@ -54,6 +54,7 @@ const statement = z.object({
     type: z.enum(['checking', 'savings', 'credit_card']).optional(), currency: text(10).optional(),
   }).optional(),
   balanceCents: cents.optional(),
+  holderName: text(120).optional(),
   warnings: z.array(text(1000)).max(200),
 });
 const candidate = parsedTx.extend({
@@ -145,6 +146,11 @@ const RPC = {
     run: repo.setTransfer,
   },
   detectTransfers: { args: z.tuple([]), run: repo.detectTransfers },
+  getHolder: { args: z.tuple([]), run: repo.getHolder },
+  saveHolder: {
+    args: z.tuple([z.object({ names: z.array(text(120)).max(10), cpf: text(20).optional() })]),
+    run: repo.saveHolder,
+  },
   prepareImport: { args: z.tuple([id, statement]), run: repo.prepareImport },
   commitImport: {
     args: z.tuple([z.object({ accountId: id, fileName: text(300), format: text(20), candidates: z.array(candidate).max(20_000) })]),
@@ -370,7 +376,9 @@ export function createApp(opts: AppOptions) {
   app.use('/api', api);
 
   app.get('/healthz', async (_req, res) => {
-    try { await db.query('SELECT 1'); res.json({ ok: true }); } catch { res.status(503).json({ ok: false }); }
+    // `version`: commit publicado (o Render informa em RENDER_GIT_COMMIT), para conferir se o deploy terminou.
+    const version = (process.env.RENDER_GIT_COMMIT ?? process.env.APP_VERSION ?? '').slice(0, 7) || null;
+    try { await db.query('SELECT 1'); res.json({ ok: true, version }); } catch { res.status(503).json({ ok: false, version }); }
   });
 
   // Página do leitor de PDF/OCR para o iframe isolado da versão web.

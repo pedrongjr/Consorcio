@@ -2,7 +2,7 @@ import type { CategoryKind, ParsedStatement } from '../core/types';
 import { rpc } from '../lib/api';
 import type {
   Account, AccountType, AccountWithBalance, Category, ClassificationLogEntry, ClassifyResult, Goal, GoalEntry, GoalInput, ImportCandidate, ImportRecord, Rule,
-  RulePreview, SimilarPreview, Transaction, TransferInput, TransferResult, TxFilter,
+  HolderInfo, RulePreview, SelfTransferResult, SimilarPreview, Transaction, TransferInput, TransferResult, TxFilter,
 } from './shared';
 
 /**
@@ -53,7 +53,9 @@ export const addManualTransaction = (
 ) => rpc<void>('addManualTransaction', t);
 export const deleteTransaction = (_db: Db, id: number) => rpc<void>('deleteTransaction', id);
 export const setTransfer = (_db: Db, txId: number, input: TransferInput) => rpc<TransferResult>('setTransfer', txId, input);
-export const detectTransfers = (_db: Db) => rpc<number>('detectTransfers');
+export const detectTransfers = (_db: Db) => rpc<SelfTransferResult>('detectTransfers');
+export const getHolder = (_db: Db) => rpc<HolderInfo>('getHolder');
+export const saveHolder = (_db: Db, input: { names: string[]; cpf?: string }) => rpc<SelfTransferResult>('saveHolder', input);
 
 export const prepareImport = (_db: Db, accountId: number, st: ParsedStatement) => rpc<ImportCandidate[]>('prepareImport', accountId, st);
 export const commitImport = (_db: Db, args: { accountId: number; fileName: string; format: string; candidates: ImportCandidate[] }) =>

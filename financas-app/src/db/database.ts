@@ -2,7 +2,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { DEFAULT_CATEGORIES } from '../core/categories';
 
 export const DB_NAME = 'financas.db';
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 /** Cria/migra o banco local. Tudo fica só no aparelho do usuário. */
 export async function migrate(db: SQLiteDatabase): Promise<void> {
@@ -140,6 +140,16 @@ export async function migrate(db: SQLiteDatabase): Promise<void> {
       ALTER TABLE transactions ADD COLUMN mirror INTEGER NOT NULL DEFAULT 0;
       CREATE INDEX IF NOT EXISTS idx_tx_peer ON transactions(transfer_peer_id);
       ALTER TABLE goals ADD COLUMN account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL;
+    `);
+  }
+  if (current < 5) {
+    // Titular das contas (nomes e 6 dígitos do meio do CPF).
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS holder_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        names TEXT NOT NULL DEFAULT '',
+        cpf_middle TEXT
+      );
     `);
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);

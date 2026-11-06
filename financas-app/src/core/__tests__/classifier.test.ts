@@ -129,3 +129,14 @@ describe('Relatórios', () => {
     expect(formatBRL(-5)).toBe('-R$ 0,05');
   });
 });
+
+describe('extrato da Caixa: apostas e prestação habitacional', () => {
+  it('classifica aposta como jogos e prestação como moradia', async () => {
+    const { Classifier } = await import('../classifier');
+    const { DEFAULT_RULES } = await import('../categories');
+    const c = new Classifier(DEFAULT_RULES);
+    expect(c.classify({ description: 'APOSTA LOTERIA INTERNET', amountCents: -1200 }).categoryKey).toBe('lazer.jogos');
+    expect(c.classify({ description: 'DEBITO PRESTACAO HAB', amountCents: -401584 }).categoryKey).toBe('moradia');
+    expect(c.classify({ description: 'VIVO FIBRA INTERNET', amountCents: -9990 }).categoryKey).toBe('moradia.internet');
+  });
+});

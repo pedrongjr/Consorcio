@@ -72,6 +72,22 @@ export interface TransferResult {
   created: boolean;
 }
 
+export interface HolderInfo {
+  /** Nomes do titular (como aparecem nos extratos). */
+  names: string[];
+  /** CPF mascarado ("***.616.981-**") ou null — o CPF completo não é guardado. */
+  cpfMasked: string | null;
+}
+
+export interface SelfTransferResult {
+  /** Registro no histórico de classificações (para desfazer). */
+  logId: number | null;
+  /** Lançamentos marcados como transferência para você mesmo. */
+  classified: number;
+  /** Pares ligados entre contas (saída numa, entrada noutra). */
+  linked: number;
+}
+
 export interface Rule {
   id: number;
   pattern: string;
@@ -120,7 +136,7 @@ export interface GoalInput {
   account_id?: number | null;
 }
 
-export type ClassificationAction = 'manual' | 'similar' | 'rule' | 'reset';
+export type ClassificationAction = 'manual' | 'similar' | 'rule' | 'reset' | 'self';
 
 /** Uma alteração de categoria (de um ou vários lançamentos), que pode ser desfeita. */
 export interface ClassificationLogEntry {
@@ -168,6 +184,7 @@ export const ACTION_LABEL: Record<ClassificationAction, string> = {
   similar: 'Categoria aplicada aos semelhantes',
   rule: 'Regra criada',
   reset: 'Classificação automática refeita',
+  self: 'Transferências para você mesmo',
 };
 
 export const ACCOUNT_TYPES: { value: AccountType; label: string }[] = [

@@ -4,12 +4,13 @@ import { Classifier, displayDescription, isGenericText, similarityKey, type Hist
 import { DEFAULT_RULES } from '../core/categories';
 import { dedupeKeys } from '../core/importer';
 import { descriptionKey, normalizeText } from '../core/text';
+import { cleanNames, cpfMiddleDigits, isSelfTransfer, type Holder } from '../core/holder';
 import { findTransferPairs, mirrorDescription, transferCategoryFor, TRANSFER_WINDOW_DAYS, type TransferCandidate } from '../core/transfers';
 import {
   RULE_TOO_GENERIC,
   type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
   type ClassifyResult, type Goal, type GoalEntry, type GoalInput, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
-  type TransferInput, type TransferResult, type TxFilter,
+  type HolderInfo, type SelfTransferResult, type TransferInput, type TransferResult, type TxFilter,
 } from './shared';
 
 export * from './shared';
@@ -124,7 +125,74 @@ export async function buildClassifier(db: SQLiteDatabase): Promise<Classifier> {
     key: similarityKey(r.description, r.memo), categoryKey: r.category_key, direction: r.amount_cents >= 0 ? 'in' : 'out',
   }));
   // Regras padrão de categorias apagadas pelo usuário são descartadas.
-  return new Classifier([...userRules, ...DEFAULT_RULES.filter((r) => validKeys.has(r.categoryKey))], history);
+  return new Classifier([...userRules, ...DEFAULT_RULES.filter((r) => validKeys.has(r.categoryKey))], history, {
+    holder: await loadHolder(db),
+    selfCategory: validKeys.has('transferencias') ? 'transferencias' : null,
+  });
+}
+
+// ---------------- Titular (transferências para si mesmo) ----------------
+
+async function loadHolder(db: SQLiteDatabase): Promise<Holder | null> {
+  const r = await db.getFirstAsync<{ names: string; cpf_middle: string | null }>('SELECT names, cpf_middle FROM holder_settings WHERE id = 1');
+  if (!r) return null;
+  const names = r.names.split('\n').filter(Boolean);
+  return names.length || r.cpf_middle ? { names, cpfMiddle: r.cpf_middle } : null;
+}
+
+export async function getHolder(db: SQLiteDatabase): Promise<HolderInfo> {
+  const h = await loadHolder(db);
+  return { names: h?.names ?? [], cpfMasked: h?.cpfMiddle ? `***.${h.cpfMiddle.slice(0, 3)}.${h.cpfMiddle.slice(3)}-**` : null };
+}
+
+async function storeHolder(db: SQLiteDatabase, names: string[], cpfMiddle: string | null): Promise<void> {
+  await db.runAsync(
+    `INSERT INTO holder_settings (id, names, cpf_middle) VALUES (1, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET names = excluded.names, cpf_middle = excluded.cpf_middle`,
+    names.join('\n'), cpfMiddle,
+  );
+}
+
+export async function saveHolder(db: SQLiteDatabase, input: { names: string[]; cpf?: string }): Promise<SelfTransferResult> {
+  const names = cleanNames(input.names);
+  let cpfMiddle = (await loadHolder(db))?.cpfMiddle ?? null;
+  if (input.cpf !== undefined) {
+    if (!input.cpf.trim()) cpfMiddle = null;
+    else {
+      cpfMiddle = cpfMiddleDigits(input.cpf);
+      if (!cpfMiddle) throw new Error('CPF inválido: informe os 11 dígitos (ou os 6 do meio, como aparecem no extrato).');
+    }
+  }
+  if (input.names.some((n) => n.trim()) && !names.length) throw new Error('Informe o nome completo (nome e sobrenome).');
+  let out: SelfTransferResult = { logId: null, classified: 0, linked: 0 };
+  await db.withTransactionAsync(async () => {
+    await storeHolder(db, names, cpfMiddle);
+    out = await applySelfTransfers(db);
+  });
+  return out;
+}
+
+async function applySelfTransfers(db: SQLiteDatabase): Promise<SelfTransferResult> {
+  const holder = await loadHolder(db);
+  const target = await validCategory(db, 'transferencias');
+  let logId: number | null = null;
+  let classified = 0;
+  if (holder && target) {
+    const rows = await db.getAllAsync<TxRow & { kind: string | null }>(
+      `SELECT t.id, t.description, t.memo, t.amount_cents, t.category_key, t.category_source, c.kind
+       FROM transactions t LEFT JOIN categories c ON c.key = t.category_key
+       WHERE t.category_source <> 'user' AND t.mirror = 0`,
+    );
+    const log = new LogWriter(db);
+    for (const r of rows) {
+      if (r.kind === 'transfer') continue;
+      if (isSelfTransfer({ description: r.description, memo: r.memo, amountCents: r.amount_cents }, holder)) await log.set(r, target, 'rule');
+    }
+    classified = log.count;
+    logId = await log.save({ action: 'self', categoryKey: target, label: 'Transferências para você mesmo (nome/CPF do titular)' });
+  }
+  const linked = await linkDetectedTransfers(db);
+  return { logId, classified, linked };
 }
 
 /** Reclassifica lançamentos que não foram categorizados manualmente. */
@@ -527,10 +595,10 @@ async function linkDetectedTransfers(db: SQLiteDatabase): Promise<number> {
 }
 
 /** Procura transferências entre contas em todos os lançamentos já importados. */
-export async function detectTransfers(db: SQLiteDatabase): Promise<number> {
-  let n = 0;
-  await db.withTransactionAsync(async () => { n = await linkDetectedTransfers(db); });
-  return n;
+export async function detectTransfers(db: SQLiteDatabase): Promise<SelfTransferResult> {
+  let out: SelfTransferResult = { logId: null, classified: 0, linked: 0 };
+  await db.withTransactionAsync(async () => { out = await applySelfTransfers(db); });
+  return out;
 }
 
 // ---------------- Importação ----------------
@@ -538,6 +606,11 @@ export async function detectTransfers(db: SQLiteDatabase): Promise<number> {
 
 /** Classifica e marca duplicados antes de mostrar a revisão ao usuário. */
 export async function prepareImport(db: SQLiteDatabase, accountId: number, st: ParsedStatement): Promise<ImportCandidate[]> {
+  if (st.holderName) {
+    const h = await loadHolder(db);
+    const names = cleanNames([st.holderName]);
+    if (names.length && !h?.names.length) await storeHolder(db, names, h?.cpfMiddle ?? null);
+  }
   const classifier = await buildClassifier(db);
   const keys = dedupeKeys(st.transactions);
   const existing = new Set(

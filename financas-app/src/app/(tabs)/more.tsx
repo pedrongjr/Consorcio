@@ -1,5 +1,6 @@
 import { router, type Href } from 'expo-router';
 import { useDb } from '../../db/DbProvider';
+import { useEffect, useState } from 'react';
 import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { showAlert } from '../../lib/dialog';
 import { exportCsv, reclassifyAll } from '../../db/repo';
@@ -25,6 +26,12 @@ function Item({ icon, title, subtitle, onPress }: { icon: IconName; title: strin
 export default function More() {
   const db = useDb();
   const go = (href: Href) => () => router.push(href);
+  // Web: versão publicada (commit), para conferir se a atualização já chegou.
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    fetch('/healthz').then((r) => r.json()).then((j: { version?: string | null }) => setVersion(j.version ?? null)).catch(() => undefined);
+  }, []);
 
   async function doExport() {
     try {
@@ -45,6 +52,7 @@ export default function More() {
       <AccountSection />
       <Card>
         <Item icon="card" title="Contas e cartões" subtitle="Saldos, saldo inicial e tipos de conta" onPress={go('/accounts')} />
+        <Item icon="person-circle" title="Titular das contas" subtitle="Seu nome/CPF: PIX para você mesmo vira transferência" onPress={go('/holder')} />
         <Item icon="pricetags" title="Categorias" subtitle="Crie, edite e organize subcategorias" onPress={go('/categories')} />
         <Item icon="git-branch" title="Regras de classificação" subtitle="Palavras-chave que definem a categoria" onPress={go('/rules')} />
         <Item icon="time" title="Histórico de importações" subtitle="Veja ou desfaça importações" onPress={go('/imports')} />
@@ -59,6 +67,7 @@ export default function More() {
           ? 'Seus dados ficam na sua conta, separados dos outros usuários. O arquivo do extrato é lido no navegador.'
           : 'Seus dados ficam apenas neste aparelho. Nenhum extrato é enviado para servidores.'}
       </Text>
+      {version ? <Text style={[styles.muted, { textAlign: 'center', fontSize: 12 }]}>Versão {version}</Text> : null}
     </ScrollView>
   );
 }

@@ -69,7 +69,7 @@ export function cleanOcrLine(line: string): string {
     // "9,59C" → "9,59 C" (indicador de crédito/débito colado, como na Caixa)
     .replace(/(\d[.,]\d{2})([CD])(?=\s|$)/g, '$1 $2')
     // "7429C" / "7.07045C" → vírgula perdida antes do indicador colado
-    .replace(/(?:^|\s)(\d[\d.]{2,9})([CD])(?=\s|$)/g, (m, n: string, cd: string) => m.replace(n + cd, `${n} ${cd}`));
+    .replace(/(?:^|\s|R\$)(\d[\d.]{2,9})([CD])(?=\s|$)/g, (m, n: string, cd: string) => m.replace(n + cd, `${n} ${cd}`));
   const toks = s
     .split(' ')
     // Menos lido como aspas ou travessão: "“35,00", "—35,00" → "-35,00"
@@ -84,11 +84,16 @@ export function cleanOcrLine(line: string): string {
     })
     // Traços e barras soltos costumam ser bordas de tabela lidas como texto.
     .filter((tok) => !/^[—–_|¦:;'"`~.,]+$/.test(tok));
+  // Barra no lugar da vírgula depois de um valor: "0,00 C 74/29" → "74,29".
+  for (let i = 1; i < toks.length; i++) {
+    if (/^\d{1,3}(\.\d{3})*\/\d{2}$/.test(toks[i]) && toks.slice(0, i).some((t) => /\d,\d{2}$/.test(t))) toks[i] = toks[i].replace('/', ',');
+  }
   // Vírgula perdida antes de C/D: "1200 D 9,59 C" → "12,00 D 9,59 C".
   for (let i = 0; i < toks.length - 1; i++) {
-    if (/^\d[\d.]{2,9}$/.test(toks[i]) && !/^\d{1,3}(\.\d{3})+$/.test(toks[i]) && /^[CD]$/.test(toks[i + 1])) {
-      const d = toks[i].replace(/\./g, '');
-      toks[i] = `${d.slice(0, -2)},${d.slice(-2)}`;
+    const m = toks[i].match(/^(R\$)?(\d[\d.]{2,9})$/);
+    if (m && !/^\d{1,3}(\.\d{3})+$/.test(m[2]) && /^[CD]$/.test(toks[i + 1])) {
+      const d = m[2].replace(/\./g, '');
+      toks[i] = `${m[1] ?? ''}${d.slice(0, -2)},${d.slice(-2)}`;
     }
   }
   // Vírgula perdida: "-2780 3.001,93" → "-27,80 3.001,93" (só com sinal, para

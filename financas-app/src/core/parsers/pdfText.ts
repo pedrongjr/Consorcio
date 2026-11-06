@@ -67,10 +67,43 @@ export function cleanPdfDescription(description: string): string {
   return d.replace(/\s[-–]\s*$/, '').replace(/\s+/g, ' ').trim();
 }
 
+const OCR_DIGIT: Record<string, string> = { O: '0', o: '0', D: '0', l: '1', I: '1', i: '1', B: '8', S: '5', s: '5' };
+
+/**
+ * CPF/CNPJ na descrição, inteiro ou mascarado ("***.616.981-**",
+ * "616.9B1*+*"), no formato "***616981**" (só os dígitos visíveis do meio).
+ */
+export function extractDocument(text: string): string | null {
+  for (const tok of text.split(/\s+/)) {
+    const t = tok.replace(/[OolIiBSsD]/g, (c) => OCR_DIGIT[c] ?? c);
+    // CPF completo
+    let m = t.match(/^\*+(\d{6})\*+$/);
+    if (m) return `***${m[1]}**`;
+    m = t.match(/^\*{0,3}(\d{3})\.?(\d{3})\.?(\d{3})-?(\d{2})$/);
+    if (m) return `***${m[2]}${m[3]}**`;
+    // Mascarado: "***.616.981-**", "616.981*+*" ou só "616.981" (o OCR perde os asteriscos).
+    m = t.match(/^[*+]{0,4}\.?(\d{3})\.(\d{3})(?:[-*+.]+\d{0,2}[-*+]*)?$/);
+    if (m) return `***${m[1]}${m[2]}**`;
+  }
+  return null;
+}
+
+/** Nome do titular no cabeçalho do extrato ("Cliente FULANO", "Titular: FULANO"). */
+export function extractHolderName(lines: string[]): string | null {
+  for (const l of lines.slice(0, 40)) {
+    const m = l.match(/^\s*(?:CLIENTE|TITULAR|CORRENTISTA|NOME(?: DO CLIENTE)?)\s*:?\s+([A-ZÀ-Úa-zà-ú][A-ZÀ-Úa-zà-ú' ]{5,80})$/i);
+    if (m) {
+      const name = m[1].replace(/\s+/g, ' ').trim();
+      if (name.split(' ').length >= 2) return name.toUpperCase();
+    }
+  }
+  return null;
+}
+
 type MoneyTok = ReturnType<typeof moneyTokens>[number];
 type Row =
   | { kind: 'balance'; date: string | null; balance: number; opening: boolean }
-  | { kind: 'tx'; date: string; description: string; descNorm: string; amountTok: MoneyTok | null; balanceTok: MoneyTok | null };
+  | { kind: 'tx'; date: string; description: string; descNorm: string; memo: string | null; amountTok: MoneyTok | null; balanceTok: MoneyTok | null };
 
 export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): ParsedStatement {
   const fullText = lines.join('\n');
@@ -117,11 +150,12 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
     if (!date) continue;
 
     // Remove uma segunda data (data do movimento x data do lançamento).
-    const description = cleanPdfDescription(
-      rest.slice(0, tokens[0].index).trim()
-        .replace(DATE_RE, '')
-        .replace(/\s\d{1,2}\/\d{1,2}(\/\d{2,4})?$/, ''),
-    );
+    const rawDesc = rest.slice(0, tokens[0].index).trim()
+      .replace(DATE_RE, '')
+      .replace(/\s\d{1,2}\/\d{1,2}(\/\d{2,4})?$/, '');
+    const description = cleanPdfDescription(rawDesc);
+    // CPF/CNPJ (às vezes mascarado) vai para o complemento: identifica transferências para si mesmo.
+    const doc = extractDocument(rawDesc);
     const descNorm = normalizeText(description);
     if (!/[A-Z]{2,}/.test(descNorm) || SKIP.test(descNorm) || SKIP.test(norm)) continue;
 
@@ -132,7 +166,7 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
       balanceTok = tokens[0];
       amountTok = null;
     }
-    rows.push({ kind: 'tx', date, description, descNorm, amountTok, balanceTok });
+    rows.push({ kind: 'tx', date, description, descNorm, memo: doc ? `CPF/CNPJ ${doc}` : null, amountTok, balanceTok });
     currentDate = date;
     sawTransaction = true;
   }
@@ -150,56 +184,100 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
   const ordered = descending
     ? [...rows.filter((r) => r.kind === 'balance' && r.opening), ...rows.filter((r) => !(r.kind === 'balance' && r.opening)).reverse()]
     : rows;
-  const balanceOf = (r: Row | undefined) => (!r ? null : r.kind === 'balance' ? r.balance : r.balanceTok?.value ?? null);
 
   // 3ª passada: valores e sinais, conferindo com a coluna de saldo.
-  let prevBalance: number | null = null;
+  //
+  // `prev` guarda os candidatos a saldo anterior. Normalmente é um só; quando
+  // a linha "SALDO DIA" discorda do saldo do último lançamento (um dos dois foi
+  // mal lido), ficam os dois e vale o que bater com o valor lido a seguir.
+  // `prevOk` diz se o saldo anterior foi confirmado por um valor lido — só
+  // então um valor lido diferente da variação do saldo pode ser corrigido.
+  let prev: number[] = [];
+  let prevOk = false;
+  let lastRowWasTx = false;
   let inferredFromBalance = 0;
   let corrected = 0;
+  const breaks: string[] = [];
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1;
   ordered.forEach((row, idx) => {
     if (row.kind === 'balance') {
-      prevBalance = row.balance;
+      if (lastRowWasTx && prev.length && !prev.some((p) => near(p, row.balance))) {
+        prev = [...prev, row.balance];
+        prevOk = false;
+      } else if (!prev.length || !lastRowWasTx) {
+        prev = [row.balance];
+        prevOk = false;
+      }
+      lastRowWasTx = false;
       return;
     }
+    lastRowWasTx = true;
     const { amountTok, balanceTok, descNorm } = row;
-    const diff = balanceTok && prevBalance !== null ? balanceTok.value - prevBalance : null;
+    const bal = balanceTok?.value ?? null;
     let amount: number;
 
     if (!amountTok) {
-      if (diff === null) {
-        if (balanceTok) prevBalance = balanceTok.value;
+      // Só o saldo foi lido: o valor é a diferença, se não houver dúvida sobre o saldo anterior.
+      if (bal === null || prev.length !== 1 || near(bal, prev[0])) {
+        if (bal !== null) { prev = [bal]; prevOk = false; }
         return;
       }
-      amount = diff;
+      amount = bal - prev[0];
       inferredFromBalance++;
+      prev = [bal];
+      prevOk = false;
     } else {
       amount = amountTok.value;
-      const matches = diff !== null && Math.abs(Math.abs(diff) - Math.abs(amount)) <= 1;
-      if (matches) {
-        if (!isCard) amount = diff! >= 0 ? Math.abs(amount) : -Math.abs(amount);
-      } else if (opts.ocr && diff !== null && diff !== 0 && hasBalanceColumn) {
-        // Valor lido diferente da variação do saldo. Só corrige se o saldo
-        // desta linha também bate com o próximo lançamento (senão o erro de
-        // leitura pode estar no próprio saldo).
-        const next = ordered.slice(idx + 1).find((r) => balanceOf(r) !== null);
-        const nb = balanceOf(next);
-        const confirmed = next && nb !== null && (next.kind === 'balance'
-          ? Math.abs(nb - balanceTok!.value) <= 1
-          : !!next.amountTok && Math.abs(Math.abs(nb - balanceTok!.value) - Math.abs(next.amountTok.value)) <= 1);
+      const match = bal === null ? undefined : prev.find((p) => near(Math.abs(bal - p), Math.abs(amount)));
+      if (match !== undefined && bal !== null) {
+        if (!isCard) amount = bal - match >= 0 ? Math.abs(amount) : -Math.abs(amount);
+        prev = [bal];
+        prevOk = true;
+      } else if (opts.ocr && hasBalanceColumn && bal !== null && prev.length === 1 && prevOk && !near(bal, prev[0])) {
+        // Valor lido diferente da variação do saldo, com o saldo anterior
+        // confirmado. Só corrige se o saldo desta linha também bate com o
+        // próximo lançamento (senão o erro de leitura pode estar no saldo).
+        const next = ordered.slice(idx + 1).find((r) => r.kind === 'tx' ? !!r.balanceTok && !!r.amountTok : true);
+        const confirmed = !!next && (next.kind === 'balance'
+          ? near(next.balance, bal)
+          : near(Math.abs(next.balanceTok!.value - bal), Math.abs(next.amountTok!.value)));
         if (confirmed) {
-          amount = diff;
+          amount = bal - prev[0];
           corrected++;
+          prevOk = true;
         } else {
           amount = signed(amountTok, amount, descNorm, isCard);
+          prevOk = false;
+          breaks.push(row.date);
         }
+        prev = [bal];
       } else {
         amount = signed(amountTok, amount, descNorm, isCard);
+        // Saldo que não fecha com o anterior: valor ou saldo mal lido, ou lançamento perdido no meio.
+        if (hasBalanceColumn && bal !== null && prev.length === 1 && !isCard) breaks.push(row.date);
+        if (bal !== null) { prev = [bal]; prevOk = false; }
       }
     }
-    if (balanceTok) prevBalance = balanceTok.value;
     if (amount === 0) return;
-    transactions.push({ date: row.date, description: row.description, amountCents: amount });
+    transactions.push({ date: row.date, description: row.description, amountCents: amount, ...(row.memo ? { memo: row.memo } : {}) });
   });
+
+  // Conferência: saldo inicial + lançamentos deve dar o saldo final. Se não
+  // bater, algum lançamento pode ter sido perdido ou mal lido.
+  const balances = ordered.map((r) => (r.kind === 'balance' ? r.balance : r.balanceTok?.value ?? null));
+  const firstIdx = balances.findIndex((v) => v !== null);
+  const opening = ordered.find((r) => r.kind === 'balance' && r.opening) as { balance: number } | undefined;
+  const closing = [...balances].reverse().find((v) => v !== null) ?? null;
+  let reconcileGap: number | null = null;
+  if (hasBalanceColumn && closing !== null && firstIdx >= 0) {
+    const firstRow = ordered[firstIdx];
+    // Saldo antes do primeiro lançamento: o "saldo anterior" ou o da primeira linha menos o valor dela.
+    const start = opening?.balance ?? null;
+    if (start !== null && firstRow) {
+      const sum = transactions.reduce((s, t) => s + t.amountCents, 0);
+      if (!near(start + sum, closing)) reconcileGap = closing - (start + sum);
+    }
+  }
   if (descending) transactions.reverse();
 
   if (transactions.length === 0) {
@@ -207,14 +285,31 @@ export function parsePdfText(lines: string[], opts: PdfParseOptions = {}): Parse
       ? 'Nenhum lançamento reconhecido pelo OCR. Use uma imagem nítida, reta e bem iluminada, ou exporte o extrato em OFX/CSV.'
       : 'Nenhum lançamento reconhecido no PDF. Exporte o extrato em OFX ou CSV pelo internet banking.');
   } else if (opts.ocr) {
+    if (reconcileGap !== null) {
+      warnings.push(`Atenção: o saldo inicial mais os lançamentos lidos não dá o saldo final do extrato (diferença de ${brl(reconcileGap)}). Algum lançamento pode ter sido perdido ou mal lido: compare com o PDF antes de importar.`);
+    }
+    if (breaks.length) {
+      const days = [...new Set(breaks)].map((d) => `${d.slice(8, 10)}/${d.slice(5, 7)}`).join(', ');
+      warnings.push(`O saldo não fecha com o valor lido em ${breaks.length} linha(s) (${days}): confira essas datas no PDF.`);
+    }
     if (inferredFromBalance) warnings.push(`${inferredFromBalance} valor(es) não foram lidos e foram calculados pela diferença de saldo.`);
     if (corrected) warnings.push(`${corrected} valor(es) lidos com erro foram corrigidos pela diferença de saldo.`);
     warnings.push('Texto lido por OCR (reconhecimento de imagem): confira datas, valores e sinais com atenção antes de importar.');
   } else {
+    if (reconcileGap !== null) {
+      warnings.push(`Atenção: o saldo inicial mais os lançamentos lidos não dá o saldo final do extrato (diferença de ${brl(reconcileGap)}). Confira com o PDF antes de importar.`);
+    }
     warnings.push('PDF lido por aproximação: confira valores e sinais antes de importar.');
   }
-  return { format: opts.format ?? 'pdf', transactions, warnings, account: isCard ? { type: 'credit_card' } : undefined };
+  const holderName = extractHolderName(lines);
+  return {
+    format: opts.format ?? 'pdf', transactions, warnings,
+    account: isCard ? { type: 'credit_card' } : undefined,
+    ...(holderName ? { holderName } : {}),
+  };
 }
+
+const brl = (cents: number) => (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 /** Sinal do valor quando o saldo não ajuda: indicador explícito ou palavras-chave. */
 function signed(tok: MoneyTok, amount: number, descNorm: string, isCard: boolean): number {

@@ -26,6 +26,8 @@ export interface ParsedStatement {
     type?: 'checking' | 'savings' | 'credit_card';
     currency?: string;
   };
+  /** Nome do titular lido no cabeçalho do extrato (PDF). */
+  holderName?: string;
   /** Saldo final informado pelo banco, em centavos. */
   balanceCents?: number;
   /** Avisos não fatais (linhas ignoradas etc.). */

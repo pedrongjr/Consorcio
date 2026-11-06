@@ -13,7 +13,7 @@ export type Tx = pg.PoolClient;
 export const RLS_ROLE = 'financas_rls';
 
 /** Tabelas com dados de usuário. Todas têm `user_id` e Row-Level Security forçado. */
-const USER_TABLES = ['accounts', 'categories', 'imports', 'transactions', 'rules', 'budgets', 'class_log', 'class_log_items', 'goals', 'goal_entries'] as const;
+const USER_TABLES = ['accounts', 'categories', 'imports', 'transactions', 'rules', 'budgets', 'class_log', 'class_log_items', 'goals', 'goal_entries', 'holder_settings'] as const;
 
 export function createPool(connectionString: string): Db {
   const ssl = /sslmode=(require|verify)/.test(connectionString) || process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined;
@@ -209,6 +209,15 @@ BEGIN
       REFERENCES accounts(id, user_id) ON DELETE SET NULL (account_id);
   END IF;
 END $$;
+
+-- Titular das contas (nomes e os 6 dígitos do meio do CPF): PIX/TED para si
+-- mesmo vira transferência. O CPF completo nunca é guardado.
+CREATE TABLE IF NOT EXISTS holder_settings (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  names TEXT NOT NULL DEFAULT '',
+  cpf_middle TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
 
 export interface RlsStatus {

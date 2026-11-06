@@ -479,6 +479,60 @@ for (const asOwner of [false, true]) suite(`API web (${asOwner ? 'dono comum' : 
       expect(bal).toBe(-12345 + 500000 - 3990);
     });
 
+    it('titular: PIX para si mesmo vira transferência (nome/CPF), salário não; isolado por usuário e desfazível', async () => {
+      const P = new Client();
+      expect((await P.post('/api/auth/register', { email: 'pedro@exemplo.com', password: STRONG, name: 'P' })).status).toBe(201);
+      const caixa = (await P.rpc<number>('saveAccount', { name: 'Caixa', type: 'checking' })).result;
+      const nu = (await P.rpc<number>('saveAccount', { name: 'Nubank', type: 'checking' })).result;
+      type C = { description: string; categoryKey: string; categorySource: string; amountCents: number };
+      // O nome vem do cabeçalho do PDF e é guardado na primeira importação.
+      const cands = (await P.rpc<C[]>('prepareImport', caixa, {
+        format: 'pdf', warnings: [], holderName: 'FULANO DE TAL SOUZA',
+        transactions: [
+          { date: '2026-10-06', description: 'RECEBIMENTO TED SALARIO Fulano De Tal', amountCents: 707045 },
+          { date: '2026-10-06', description: 'DEB PIX CHAVE Fulano De Tal', amountCents: -300000, memo: 'CPF/CNPJ ***616981**' },
+          { date: '2026-10-07', description: 'DEB PIX CHAVE Beltrano Silva', amountCents: -5000 },
+        ],
+      })).result;
+      expect(cands.map((c) => c.categoryKey)).toEqual([expect.not.stringMatching(/^transferencias$/), 'transferencias', expect.not.stringMatching(/^transferencias$/)]);
+      expect((await P.rpc<{ names: string[]; cpfMasked: string | null }>('getHolder')).result).toEqual({ names: ['FULANO DE TAL SOUZA'], cpfMasked: null });
+      await P.rpc('commitImport', { accountId: caixa, fileName: 'out.pdf', format: 'pdf', candidates: cands });
+
+      // Nubank importado antes de cadastrar o CPF: o PIX vem só com o CPF.
+      const nuC = (await P.rpc<C[]>('prepareImport', nu, { format: 'csv', warnings: [], transactions: [
+        { date: '2026-10-08', description: 'TRANSFERENCIA RECEBIDA', memo: 'CPF ***.616.981-**', amountCents: 250000 },
+      ] })).result;
+      expect(nuC[0].categoryKey).not.toBe('transferencias');
+      await P.rpc('commitImport', { accountId: nu, fileName: 'nu.csv', format: 'csv', candidates: nuC });
+
+      // CPF inválido é recusado; válido guarda só os 6 dígitos do meio e reclassifica.
+      expect((await P.rpc('saveHolder', { names: ['Fulano de Tal Souza'], cpf: '123' })).status).toBe(400);
+      const r = await P.rpc<{ classified: number; linked: number; logId: number }>('saveHolder', { names: ['Fulano de Tal Souza'], cpf: '123.616.981-00' });
+      expect(r.result).toMatchObject({ classified: 1 });
+      expect((await P.rpc<{ cpfMasked: string }>('getHolder')).result.cpfMasked).toBe('***.616.981-**');
+      const stored = (await raw.query('SELECT names, cpf_middle FROM holder_settings')).rows;
+      expect(stored).toEqual([{ names: 'FULANO DE TAL SOUZA', cpf_middle: '616981' }]);
+      type T = { description: string; category_key: string; account_id: number };
+      let txs = (await P.rpc<T[]>('listTransactions', {})).result;
+      expect(txs.find((t) => t.description === 'TRANSFERENCIA RECEBIDA')!.category_key).toBe('transferencias');
+      expect(txs.find((t) => t.description.includes('SALARIO'))!.category_key).not.toBe('transferencias');
+      expect(txs.find((t) => t.description.includes('Beltrano'))!.category_key).not.toBe('transferencias');
+
+      // Desfazer pelo histórico volta a categoria anterior.
+      await P.rpc('undoClassification', r.result.logId);
+      txs = (await P.rpc<T[]>('listTransactions', {})).result;
+      expect(txs.find((t) => t.description === 'TRANSFERENCIA RECEBIDA')!.category_key).not.toBe('transferencias');
+      // "Procurar transferências" aplica de novo.
+      expect((await P.rpc<{ classified: number }>('detectTransfers')).result.classified).toBe(1);
+
+      // Outro usuário não vê nem é afetado pelo titular de P.
+      const Q = await registerWithData('quinho@exemplo.com', 'QUINHO');
+      expect((await Q.c.rpc('getHolder')).result).toEqual({ names: [], cpfMasked: null });
+      await Q.c.rpc('saveHolder', { names: ['Quinho Pereira'] });
+      expect((await P.rpc<{ names: string[] }>('getHolder')).result.names).toEqual(['FULANO DE TAL SOUZA']);
+      expect((await raw.query('SELECT count(*)::int AS n FROM holder_settings')).rows[0].n).toBe(2);
+    });
+
     it('transferências entre contas: detecção, contrapartida sem duplicar e isolamento', async () => {
       const G = new Client();
       expect((await G.post('/api/auth/register', { email: 'gabi@exemplo.com', password: STRONG, name: 'G' })).status).toBe(201);

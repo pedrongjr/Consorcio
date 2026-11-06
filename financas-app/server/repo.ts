@@ -3,12 +3,13 @@ import { Classifier, displayDescription, isGenericText, similarityKey, type Hist
 import { DEFAULT_RULES } from '../src/core/categories';
 import { dedupeKeys } from '../src/core/importer';
 import { descriptionKey, normalizeText } from '../src/core/text';
+import { cleanNames, cpfMiddleDigits, isSelfTransfer, type Holder } from '../src/core/holder';
 import { findTransferPairs, mirrorDescription, transferCategoryFor, TRANSFER_WINDOW_DAYS, type TransferCandidate } from '../src/core/transfers';
 import {
   RULE_TOO_GENERIC,
   type Account, type AccountType, type AccountWithBalance, type Category, type ClassificationAction, type ClassificationLogEntry,
   type ClassifyResult, type Goal, type GoalEntry, type GoalInput, type ImportCandidate, type ImportRecord, type Rule, type RulePreview, type SimilarPreview, type Transaction,
-  type TransferInput, type TransferResult, type TxFilter,
+  type HolderInfo, type SelfTransferResult, type TransferInput, type TransferResult, type TxFilter,
 } from '../src/db/shared';
 import type { Tx } from './db';
 
@@ -167,7 +168,76 @@ async function buildClassifier(tx: Tx, uid: number): Promise<Classifier> {
   )).rows.map((r) => ({
     key: similarityKey(r.description, r.memo), categoryKey: r.category_key, direction: r.amount_cents >= 0 ? 'in' : 'out',
   }));
-  return new Classifier([...userRules, ...DEFAULT_RULES.filter((r) => validKeys.has(r.categoryKey))], history);
+  return new Classifier([...userRules, ...DEFAULT_RULES.filter((r) => validKeys.has(r.categoryKey))], history, {
+    holder: await loadHolder(tx, uid),
+    selfCategory: validKeys.has('transferencias') ? 'transferencias' : null,
+  });
+}
+
+// ---------------- Titular (transferências para si mesmo) ----------------
+
+async function loadHolder(tx: Tx, uid: number): Promise<Holder | null> {
+  const r = (await tx.query<{ names: string; cpf_middle: string | null }>('SELECT names, cpf_middle FROM holder_settings WHERE user_id = $1', [uid])).rows[0];
+  if (!r) return null;
+  const names = r.names.split('\n').filter(Boolean);
+  return names.length || r.cpf_middle ? { names, cpfMiddle: r.cpf_middle } : null;
+}
+
+export async function getHolder(tx: Tx, uid: number): Promise<HolderInfo> {
+  const h = await loadHolder(tx, uid);
+  return { names: h?.names ?? [], cpfMasked: h?.cpfMiddle ? `***.${h.cpfMiddle.slice(0, 3)}.${h.cpfMiddle.slice(3)}-**` : null };
+}
+
+async function storeHolder(tx: Tx, uid: number, names: string[], cpfMiddle: string | null): Promise<void> {
+  await tx.query(
+    `INSERT INTO holder_settings (user_id, names, cpf_middle, updated_at) VALUES ($1, $2, $3, now())
+     ON CONFLICT (user_id) DO UPDATE SET names = EXCLUDED.names, cpf_middle = EXCLUDED.cpf_middle, updated_at = now()`,
+    [uid, names.join('\n'), cpfMiddle],
+  );
+}
+
+/**
+ * Salva o titular e reclassifica como transferência os lançamentos já
+ * importados que citam o nome/CPF dele (exceto os categorizados à mão e as
+ * receitas próprias, como salário). Fica no histórico para desfazer.
+ * `cpf`: undefined mantém o atual; '' apaga; senão CPF completo ou 6 dígitos.
+ */
+export async function saveHolder(tx: Tx, uid: number, input: { names: string[]; cpf?: string }): Promise<SelfTransferResult> {
+  const names = cleanNames(input.names);
+  let cpfMiddle = (await loadHolder(tx, uid))?.cpfMiddle ?? null;
+  if (input.cpf !== undefined) {
+    if (!input.cpf.trim()) cpfMiddle = null;
+    else {
+      cpfMiddle = cpfMiddleDigits(input.cpf);
+      if (!cpfMiddle) throw new ValidationError('CPF inválido: informe os 11 dígitos (ou os 6 do meio, como aparecem no extrato).');
+    }
+  }
+  if (input.names.some((n) => n.trim()) && !names.length) throw new ValidationError('Informe o nome completo (nome e sobrenome).');
+  await storeHolder(tx, uid, names, cpfMiddle);
+  return applySelfTransfers(tx, uid);
+}
+
+async function applySelfTransfers(tx: Tx, uid: number): Promise<SelfTransferResult> {
+  const holder = await loadHolder(tx, uid);
+  const target = await validCategory(tx, uid, 'transferencias');
+  let logId: number | null = null;
+  let classified = 0;
+  if (holder && target) {
+    const rows = (await tx.query<TxRow & { kind: string | null }>(
+      `SELECT t.id, t.description, t.memo, t.amount_cents, t.category_key, t.category_source, c.kind
+       FROM transactions t LEFT JOIN categories c ON c.key = t.category_key AND c.user_id = t.user_id
+       WHERE t.user_id = $1 AND t.category_source <> 'user' AND t.mirror = 0`, [uid],
+    )).rows;
+    const log = new LogWriter(tx, uid);
+    for (const r of rows) {
+      if (r.kind === 'transfer') continue;
+      if (isSelfTransfer({ description: r.description, memo: r.memo, amountCents: Number(r.amount_cents) }, holder)) await log.set(r, target, 'rule');
+    }
+    classified = log.count;
+    logId = await log.save({ action: 'self', categoryKey: target, label: 'Transferências para você mesmo (nome/CPF do titular)' });
+  }
+  const linked = await linkDetectedTransfers(tx, uid);
+  return { logId, classified, linked };
 }
 
 export async function reclassifyAll(tx: Tx, uid: number): Promise<number> {
@@ -590,14 +660,21 @@ async function linkDetectedTransfers(tx: Tx, uid: number): Promise<number> {
 }
 
 /** Procura transferências entre contas em todos os lançamentos já importados. */
-export async function detectTransfers(tx: Tx, uid: number): Promise<number> {
-  return linkDetectedTransfers(tx, uid);
+export async function detectTransfers(tx: Tx, uid: number): Promise<SelfTransferResult> {
+  return applySelfTransfers(tx, uid);
 }
 
 // ---------------- Importação ----------------
 
 export async function prepareImport(tx: Tx, uid: number, accountId: number, st: ParsedStatement): Promise<ImportCandidate[]> {
   await ensureAccount(tx, uid, accountId);
+  // Primeiro extrato com o nome do titular no cabeçalho: guarda o nome para
+  // reconhecer PIX/TED para si mesmo (pode ser alterado em Mais › Titular).
+  if (st.holderName) {
+    const h = await loadHolder(tx, uid);
+    const names = cleanNames([st.holderName]);
+    if (names.length && !h?.names.length) await storeHolder(tx, uid, names, h?.cpfMiddle ?? null);
+  }
   const classifier = await buildClassifier(tx, uid);
   const keys = dedupeKeys(st.transactions);
   const existing = new Set(

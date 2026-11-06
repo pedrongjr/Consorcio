@@ -18,7 +18,11 @@ export default function ImportReview() {
   const [items, setItems] = useState<ImportCandidate[]>(session?.candidates ?? []);
   const [editing, setEditing] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(
+    session?.statement.holderName
+      ? `Titular do extrato: ${session.statement.holderName}. PIX/TED para ou de você mesmo entram como transferência (ajuste em Mais › Titular das contas).`
+      : null,
+  );
   const { data: cats } = useAsyncData(() => listCategories(db), [db]);
   const catMap = useMemo(() => new Map<string, Category>((cats ?? []).map((c) => [c.key, c])), [cats]);
 

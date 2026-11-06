@@ -36,13 +36,14 @@ export default function Accounts() {
 
   async function findTransfers() {
     try {
-      const n = await detectTransfers(db);
-      showAlert(
-        n ? `${n} transferência(s) encontrada(s)` : 'Nenhuma transferência nova',
-        n
-          ? 'Saídas e entradas de mesmo valor entre suas contas foram ligadas e marcadas como transferência (não contam como gasto nem receita).'
-          : 'Para indicar uma transferência à mão, abra o lançamento, escolha a categoria “Transferências entre contas” e a outra conta.',
-      );
+      const r = await detectTransfers(db);
+      const parts: string[] = [];
+      if (r.linked) parts.push(`${r.linked} par(es) saída/entrada entre suas contas foram ligados.`);
+      if (r.classified) parts.push(`${r.classified} PIX/TED para você mesmo (nome/CPF do titular) marcados como transferência. Para desfazer: Mais › Histórico de classificações.`);
+      parts.push(r.linked || r.classified
+        ? 'Transferências não contam como gasto nem receita.'
+        : 'Para indicar uma transferência à mão, abra o lançamento, escolha a categoria “Transferências entre contas” e a outra conta. Cadastre seu nome/CPF em Mais › Titular das contas para o app reconhecer PIX para você mesmo.');
+      showAlert(r.linked || r.classified ? 'Transferências encontradas' : 'Nenhuma transferência nova', parts.join('\n\n'));
       reload();
     } catch (e) {
       showAlert('Não foi possível procurar', (e as Error).message);

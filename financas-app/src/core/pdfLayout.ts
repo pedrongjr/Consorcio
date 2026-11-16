@@ -17,7 +17,8 @@ export interface PdfTextItem {
  * do "D" ao lado, o que jogava valor e saldo para uma linha separada.
  */
 export function groupTextItems(items: PdfTextItem[]): string[] {
-  const valid = items.filter((i) => i.str && i.str.trim());
+  // Cópias: a marcação de colunas crédito/débito altera `str`.
+  const valid = items.filter((i) => i.str && i.str.trim()).map((i) => ({ ...i }));
   if (valid.length === 0) return [];
   const h = (i: PdfTextItem) => Math.max(1, i.height || 8);
   const mid = (i: PdfTextItem) => i.y + h(i) / 2;
@@ -34,18 +35,59 @@ export function groupTextItems(items: PdfTextItem[]): string[] {
     else rows.push({ lo, hi, items: [it] });
   }
   rows.sort((a, b) => b.hi + b.lo - a.hi - a.lo);
+  markCreditDebitColumns(rows.map((r) => r.items));
   return rows.map(({ items: r }) => {
     r.sort((a, b) => a.x - b.x);
     let line = '';
     let lastEnd = -Infinity;
     for (const it of r) {
       const gap = it.x - lastEnd;
-      if (line && gap > Math.max(1, (it.height || 8) * 0.15) && !line.endsWith(' ') && !it.str.startsWith(' ')) line += ' ';
+      // Colunas vizinhas de valores (valor e saldo) às vezes encostam: "150,00850,00".
+      const moneyThenNumber = /\d,\d{2}$/.test(line) && /^[-+(]?\d/.test(it.str.trim());
+      if (line && (gap > Math.max(1, (it.height || 8) * 0.15) || moneyThenNumber) && !line.endsWith(' ') && !it.str.startsWith(' ')) line += ' ';
       line += it.str;
       lastEnd = it.x + it.width;
     }
     return line.replace(/\s+/g, ' ').trim();
   }).filter(Boolean);
+}
+
+const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+const UNSIGNED_MONEY = /^(R\$\s?)?(\d{1,3}(\.\d{3})+|\d+),\d{2}$/;
+
+/**
+ * Extratos com colunas separadas de crédito e débito (Bradesco, Itaú, Banco do
+ * Brasil em alguns modelos) trazem valores sem sinal: o sinal está na coluna.
+ * Ao achar o cabeçalho "Crédito"/"Débito" (ou "Entradas"/"Saídas"), cada valor
+ * sem sinal abaixo dele ganha "+" ou "-" conforme a coluna mais próxima; os da
+ * coluna "Saldo" ficam como estão. Vale até o próximo cabeçalho.
+ */
+function markCreditDebitColumns(rows: PdfTextItem[][]): void {
+  type Cols = { inX: number[]; outX: number[]; balX: number[] | null };
+  let cols: Cols | null = null;
+  const xs = (i: PdfTextItem) => [i.x + i.width / 2, i.x + i.width];
+  for (const row of rows) {
+    const cIn = row.find((i) => /^(CREDITO|CREDITOS|ENTRADAS?|VALOR DE ENTRADA)\b/.test(plain(i.str)));
+    const cOut = row.find((i) => /^(DEBITO|DEBITOS|SAIDAS?|VALOR DE SAIDA)\b/.test(plain(i.str)));
+    if (cIn && cOut && cIn !== cOut) {
+      const bal = row.find((i) => /^SALDO\b/.test(plain(i.str)));
+      cols = { inX: xs(cIn), outX: xs(cOut), balX: bal ? xs(bal) : null };
+      continue;
+    }
+    if (!cols) continue;
+    const c: Cols = cols;
+    for (const it of row) {
+      const str = it.str.trim();
+      if (!UNSIGNED_MONEY.test(str)) continue;
+      const [mid, right] = xs(it);
+      const dist = (p: number[]) => Math.min(Math.abs(mid - p[0]), Math.abs(right - p[1]));
+      const dIn = dist(c.inX);
+      const dOut = dist(c.outX);
+      const dBal = c.balX ? dist(c.balX) : Infinity;
+      if (dBal < dIn && dBal < dOut) continue;
+      it.str = (dIn <= dOut ? '+' : '-') + str;
+    }
+  }
 }
 
 const OCR_DIGIT: Record<string, string> = { O: '0', o: '0', D: '0', l: '1', I: '1', i: '1', '|': '1', S: '5', s: '5', B: '8' };

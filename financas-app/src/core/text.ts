@@ -92,9 +92,13 @@ export function toCents(value: number): number {
 export function parseAmount(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === 'number') return Number.isFinite(raw) ? toCents(raw) : null;
-  let s = raw.trim().toUpperCase();
+  // Sinais tipográficos ("−R$ 10,00", "–10,00") viram hífen.
+  let s = raw.trim().toUpperCase().replace(/[−–—]/g, '-');
   if (!s) return null;
   let negative = false;
+  // Indicador entre parênteses depois do valor (Banco do Brasil): "150,00 (-)", "150,00 (+)".
+  if (/\(\s*-\s*\)$/.test(s)) { negative = true; s = s.replace(/\s*\(\s*-\s*\)$/, ''); }
+  else if (/\(\s*\+\s*\)$/.test(s)) s = s.replace(/\s*\(\s*\+\s*\)$/, '');
   if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1); }
   if (/\s*D$/.test(s) && /\d/.test(s)) { negative = true; s = s.replace(/\s*D$/, ''); }
   else if (/\s*C$/.test(s) && /\d/.test(s)) { s = s.replace(/\s*C$/, ''); }
@@ -169,6 +173,11 @@ export function parseDate(raw: string | number | null | undefined, fallbackYear?
     let y = +m[3];
     if (m[3].length === 2) y += 2000;
     return validDate(y, +m[2], +m[1]);
+  }
+  // "1 de Outubro de 2024", "01 de out. de 2024" (Inter, Nubank)
+  if ((m = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').match(/^(\d{1,2})\s+DE\s+([A-Z]{3})[A-Z]*\.?(?:\s+(?:DE\s+)?(\d{4}))?\b/)) && MONTHS_PT[m[2]]) {
+    const y = m[3] ? +m[3] : fallbackYear;
+    return y === undefined ? null : validDate(y, MONTHS_PT[m[2]], +m[1]);
   }
   if ((m = s.match(/^(\d{1,2})[\/\s.-]+([A-Z]{3})[A-Z]*\.?(?:[\/\s.-]+(\d{2,4}))?\b/)) && MONTHS_PT[m[2]]) {
     let y = m[3] ? +m[3] : fallbackYear;

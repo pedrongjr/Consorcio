@@ -1,0 +1,19 @@
+# Blueprint do Render: cria o serviço web do Minhas Finanças.
+# O banco de dados fica no Neon (Postgres gratuito, sem prazo de expiração).
+# No painel do Render: New → Blueprint → escolha este repositório e, quando
+# pedir, cole em DATABASE_URL a "connection string" do Neon (sem pooling).
+services:
+  - type: web
+    name: minhas-financas
+    runtime: docker
+    rootDir: financas-app
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"

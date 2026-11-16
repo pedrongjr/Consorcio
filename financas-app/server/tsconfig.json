@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["./**/*.ts", "../src/core/**/*.ts", "../src/db/shared.ts"],
+  "exclude": ["../src/core/__tests__/**"]
+}

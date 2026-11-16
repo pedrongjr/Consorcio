@@ -1,0 +1,93 @@
+name: IPA iOS (Minhas Finanças)
+
+# Gera um .ipa SEM assinatura. O iPhone só instala apps assinados, então este
+# arquivo precisa ser assinado na instalação (AltStore/Sideloadly com o seu
+# Apple ID). Para TestFlight/App Store, use o EAS Build com uma conta Apple
+# Developer (veja financas-app/README.md).
+
+on:
+  push:
+    paths: ['financas-app/**', '.github/workflows/ios-ipa.yml']
+  pull_request:
+    paths: ['financas-app/**', '.github/workflows/ios-ipa.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write # para publicar o IPA em "Releases"
+    defaults:
+      run:
+        working-directory: financas-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: financas-app/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Gerar projeto iOS
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Instalar pods
+        working-directory: financas-app/ios
+        run: pod install
+
+      - name: Compilar (Release, sem assinatura)
+        working-directory: financas-app/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace MinhasFinancas.xcworkspace \
+            -scheme MinhasFinancas \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -n 200
+
+      - name: Empacotar IPA
+        run: |
+          APP=ios/build/Build/Products/Release-iphoneos/MinhasFinancas.app
+          test -d "$APP"
+          mkdir -p ../dist-ipa/Payload
+          cp -R "$APP" ../dist-ipa/Payload/
+          cd ../dist-ipa && zip -qry minhas-financas-unsigned.ipa Payload && rm -rf Payload
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minhas-financas-ipa
+          path: dist-ipa/minhas-financas-unsigned.ipa
+          retention-days: 30
+
+      - name: Publicar em Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-v${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Minhas Finanças — iOS v${{ github.run_number }} (sem assinatura)
+          prerelease: true
+          make_latest: false
+          body: |
+            IPA sem assinatura gerado a partir do commit ${{ github.sha }}.
+            Para instalar no iPhone, assine com o seu Apple ID usando o Sideloadly ou o AltStore
+            (instruções em financas-app/README.md).
+          files: dist-ipa/minhas-financas-unsigned.ipa

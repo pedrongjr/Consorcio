@@ -1,0 +1,81 @@
+name: APK Android (Minhas Finanças)
+
+on:
+  push:
+    paths: ['financas-app/**', '.github/workflows/android-apk.yml']
+  pull_request:
+    paths: ['financas-app/**', '.github/workflows/android-apk.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # para publicar o APK em "Releases"
+    defaults:
+      run:
+        working-directory: financas-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: financas-app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Testes, tipos e lint
+        run: |
+          npm test
+          npx tsc --noEmit
+          npx eslint src
+
+      - name: Gerar projeto Android
+        run: npx expo prebuild --platform android --no-install
+
+      # Release assinado com a chave de depuração gerada pelo template:
+      # instalável direto no celular. Para a Play Store, use EAS Build.
+      - name: Compilar APK
+        working-directory: financas-app/android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+
+      - name: Renomear APK
+        run: |
+          mkdir -p ../dist-apk
+          cp android/app/build/outputs/apk/release/app-release.apk ../dist-apk/minhas-financas.apk
+          ls -lh ../dist-apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minhas-financas-apk
+          path: dist-apk/minhas-financas.apk
+          retention-days: 30
+
+      - name: Publicar em Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-v${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Minhas Finanças — APK v${{ github.run_number }}
+          prerelease: true
+          make_latest: false
+          body: |
+            APK gerado automaticamente a partir do commit ${{ github.sha }}.
+            Baixe `minhas-financas.apk` no celular Android e permita a instalação de fontes desconhecidas.
+          files: dist-apk/minhas-financas.apk
